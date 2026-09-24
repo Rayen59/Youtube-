@@ -103,10 +103,18 @@ export const VideoWatchView: React.FC<VideoWatchViewProps> = ({
     }
   }, [video.id, currentUser]);
 
-  // Handle Like
+  // Handle Like (saved to guest storage if not logged in)
   const handleLike = () => {
     if (!currentUser) {
-      onRequireAuth('Pour aimer ou donner votre avis sur cette vidéo, connectez-vous ou créez un compte.');
+      const guestLikes = JSON.parse(localStorage.getItem('mk_guest_likes') || '[]') as string[];
+      if (isLiked) {
+        localStorage.setItem('mk_guest_likes', JSON.stringify(guestLikes.filter((id) => id !== video.id)));
+        setIsLiked(false);
+      } else {
+        localStorage.setItem('mk_guest_likes', JSON.stringify([...guestLikes, video.id]));
+        setIsLiked(true);
+        setIsDisliked(false);
+      }
       return;
     }
 
@@ -119,11 +127,11 @@ export const VideoWatchView: React.FC<VideoWatchViewProps> = ({
     };
 
     if (isLiked) {
-      favorites.likedVideoIds = favorites.likedVideoIds.filter(id => id !== video.id);
+      favorites.likedVideoIds = favorites.likedVideoIds.filter((id) => id !== video.id);
       setIsLiked(false);
     } else {
       favorites.likedVideoIds.push(video.id);
-      favorites.dislikedVideoIds = favorites.dislikedVideoIds.filter(id => id !== video.id);
+      favorites.dislikedVideoIds = favorites.dislikedVideoIds.filter((id) => id !== video.id);
       setIsLiked(true);
       setIsDisliked(false);
       logUserActivity(currentUser.id, {
@@ -140,7 +148,8 @@ export const VideoWatchView: React.FC<VideoWatchViewProps> = ({
   // Handle Dislike
   const handleDislike = () => {
     if (!currentUser) {
-      onRequireAuth('Pour donner votre avis sur cette vidéo, connectez-vous ou créez un compte.');
+      setIsDisliked(!isDisliked);
+      if (!isDisliked) setIsLiked(false);
       return;
     }
 
@@ -153,19 +162,13 @@ export const VideoWatchView: React.FC<VideoWatchViewProps> = ({
     };
 
     if (isDisliked) {
-      favorites.dislikedVideoIds = favorites.dislikedVideoIds.filter(id => id !== video.id);
+      favorites.dislikedVideoIds = favorites.dislikedVideoIds.filter((id) => id !== video.id);
       setIsDisliked(false);
     } else {
       favorites.dislikedVideoIds.push(video.id);
-      favorites.likedVideoIds = favorites.likedVideoIds.filter(id => id !== video.id);
+      favorites.likedVideoIds = favorites.likedVideoIds.filter((id) => id !== video.id);
       setIsDisliked(true);
       setIsLiked(false);
-      logUserActivity(currentUser.id, {
-        action: 'dislike',
-        videoId: video.id,
-        videoTitle: video.title,
-        category: video.category,
-      });
     }
 
     saveUserFile(currentUser.id, 'favorites.json', favorites);
@@ -174,7 +177,14 @@ export const VideoWatchView: React.FC<VideoWatchViewProps> = ({
   // Handle Save / Favorite
   const handleSaveFavorite = () => {
     if (!currentUser) {
-      onRequireAuth('L\'enregistrement dans vos favoris ou playlists nécessite un compte MK connecté.');
+      const guestSaved = JSON.parse(localStorage.getItem('mk_guest_saved') || '[]') as string[];
+      if (isSaved) {
+        localStorage.setItem('mk_guest_saved', JSON.stringify(guestSaved.filter((id) => id !== video.id)));
+        setIsSaved(false);
+      } else {
+        localStorage.setItem('mk_guest_saved', JSON.stringify([...guestSaved, video.id]));
+        setIsSaved(true);
+      }
       return;
     }
 
@@ -187,7 +197,7 @@ export const VideoWatchView: React.FC<VideoWatchViewProps> = ({
     };
 
     if (isSaved) {
-      favorites.savedVideoIds = favorites.savedVideoIds.filter(id => id !== video.id);
+      favorites.savedVideoIds = favorites.savedVideoIds.filter((id) => id !== video.id);
       setIsSaved(false);
     } else {
       favorites.savedVideoIds.push(video.id);
@@ -203,26 +213,29 @@ export const VideoWatchView: React.FC<VideoWatchViewProps> = ({
     saveUserFile(currentUser.id, 'favorites.json', favorites);
   };
 
-  // Handle Share
+  // Handle Share (Native mobile share + modal, 100% accessible to everyone)
   const handleShare = () => {
-    if (!currentUser) {
-      onRequireAuth('Le partage de vidéos et génération de liens directs est réservé aux membres connectés.');
-      return;
+    if (typeof navigator !== 'undefined' && navigator.share) {
+      navigator
+        .share({
+          title: video.title,
+          text: `Regardez "${video.title}" sur MK Streaming :`,
+          url: window.location.href,
+        })
+        .catch(() => {
+          setShowShareModal(true);
+        });
+    } else {
+      setShowShareModal(true);
     }
-    setShowShareModal(true);
   };
 
-  // Handle Download
+  // Handle Download (Direct file download for any visitor)
   const handleDownload = () => {
-    if (!currentUser) {
-      onRequireAuth('Le téléchargement haute fidélité pour visionnage hors-ligne nécessite un compte MK.');
-      return;
-    }
-
     if (isDownloaded || isDownloading) return;
 
     setIsDownloading(true);
-    setDownloadProgress(10);
+    setDownloadProgress(20);
 
     const interval = setInterval(() => {
       setDownloadProgress((prev) => {
@@ -231,36 +244,45 @@ export const VideoWatchView: React.FC<VideoWatchViewProps> = ({
           setIsDownloading(false);
           setIsDownloaded(true);
 
-          // Save to user favorites namespace
-          const favorites = getUserFile<UserFavorites>(currentUser.id, 'favorites.json') || {
-            likedVideoIds: [],
-            dislikedVideoIds: [],
-            savedVideoIds: [],
-            downloadedVideos: [],
-            customPlaylists: [],
-          };
+          try {
+            const a = document.createElement('a');
+            a.href = video.videoUrl;
+            a.download = `${video.title.replace(/[^a-zA-Z0-9]/g, '_')}.mp4`;
+            document.body.appendChild(a);
+            a.click();
+            document.body.removeChild(a);
+          } catch {}
 
-          favorites.downloadedVideos.push({
-            videoId: video.id,
-            downloadedAt: new Date().toISOString(),
-            fileSizeMb: Math.round(video.duration * 0.18 * 10) / 10,
-            title: video.title,
-          });
+          if (currentUser) {
+            const favorites = getUserFile<UserFavorites>(currentUser.id, 'favorites.json') || {
+              likedVideoIds: [],
+              dislikedVideoIds: [],
+              savedVideoIds: [],
+              downloadedVideos: [],
+              customPlaylists: [],
+            };
 
-          saveUserFile(currentUser.id, 'favorites.json', favorites);
+            favorites.downloadedVideos.push({
+              videoId: video.id,
+              downloadedAt: new Date().toISOString(),
+              fileSizeMb: Math.round(video.duration * 0.18 * 10) / 10,
+              title: video.title,
+            });
 
-          logUserActivity(currentUser.id, {
-            action: 'download',
-            videoId: video.id,
-            videoTitle: video.title,
-            category: video.category,
-          });
+            saveUserFile(currentUser.id, 'favorites.json', favorites);
+            logUserActivity(currentUser.id, {
+              action: 'download',
+              videoId: video.id,
+              videoTitle: video.title,
+              category: video.category,
+            });
+          }
 
           return 100;
         }
-        return prev + 25;
+        return prev + 30;
       });
-    }, 250);
+    }, 200);
   };
 
   // Handle Post Comment
@@ -386,13 +408,9 @@ export const VideoWatchView: React.FC<VideoWatchViewProps> = ({
 
             <button
               onClick={() => {
-                if (!currentUser) {
-                  onRequireAuth('Pour vous abonner à cette chaîne, veuillez vous connecter.');
-                  return;
-                }
                 setIsSubscribed(!isSubscribed);
               }}
-              className={`ml-2 px-4 py-2 rounded-full text-xs font-bold transition-all ${
+              className={`ml-2 px-4 py-2 rounded-full text-xs font-bold transition-all cursor-pointer ${
                 isSubscribed
                   ? 'bg-white/10 hover:bg-white/20 text-gray-300'
                   : 'bg-white hover:bg-gray-100 text-black shadow-md'

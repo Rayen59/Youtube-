@@ -27,7 +27,11 @@ import {
   getUserFile,
   saveUserFile,
 } from './storage/userNamespace';
-import { getCustomVideos, saveCustomVideo } from './services/customVideosStorage';
+import {
+  getCustomVideos,
+  saveCustomVideo,
+  hydrateGalleryVideos,
+} from './services/customVideosStorage';
 import { CheckCircle2, Video as VideoIcon } from 'lucide-react';
 
 interface NavigationState {
@@ -76,7 +80,11 @@ export default function App() {
         setCurrentUser(session);
       }
     });
-    setCustomVideos(getCustomVideos());
+    hydrateGalleryVideos().then((hydrated) => {
+      setCustomVideos(hydrated);
+    }).catch(() => {
+      setCustomVideos(getCustomVideos());
+    });
   }, []);
 
   // Sync theme
@@ -188,10 +196,18 @@ export default function App() {
     handleSelectVideo(newVideo);
   };
 
-  // Quick Save
+  // Quick Save (available to everyone)
   const handleQuickSave = (video: Video, e: React.MouseEvent) => {
+    e.stopPropagation();
     if (!currentUser) {
-      handleRequireAuth('Connectez-vous pour enregistrer cette vidéo dans vos favoris.');
+      const guestSaved = JSON.parse(localStorage.getItem('mk_guest_saved') || '[]') as string[];
+      if (!guestSaved.includes(video.id)) {
+        localStorage.setItem('mk_guest_saved', JSON.stringify([...guestSaved, video.id]));
+        showToast('Ajouté à vos Favoris');
+      } else {
+        localStorage.setItem('mk_guest_saved', JSON.stringify(guestSaved.filter((id) => id !== video.id)));
+        showToast('Retiré de vos Favoris');
+      }
       return;
     }
     const favorites = getUserFile<UserFavorites>(currentUser.id, 'favorites.json') || {
@@ -212,14 +228,26 @@ export default function App() {
     }
   };
 
-  // Quick Share
+  // Quick Share (Instant native share or clipboard copy for everyone)
   const handleQuickShare = (video: Video, e: React.MouseEvent) => {
-    if (!currentUser) {
-      handleRequireAuth('Connectez-vous pour partager cette vidéo avec la communauté.');
-      return;
+    e.stopPropagation();
+    const shareUrl = `${window.location.origin}/#watch?id=${video.id}`;
+    if (typeof navigator !== 'undefined' && navigator.share) {
+      navigator
+        .share({
+          title: video.title,
+          text: `Regardez "${video.title}" sur MK Streaming :`,
+          url: shareUrl,
+        })
+        .then(() => showToast('Partagé avec succès !'))
+        .catch(() => {
+          navigator.clipboard.writeText(shareUrl);
+          showToast('Lien copié dans le presse-papier !');
+        });
+    } else {
+      navigator.clipboard.writeText(shareUrl);
+      showToast('Lien copié dans le presse-papier !');
     }
-    navigator.clipboard.writeText(`${window.location.origin}/#watch?id=${video.id}`);
-    showToast('Lien copié dans le presse-papier !');
   };
 
   // Filtered & Sorted Videos
@@ -275,13 +303,7 @@ export default function App() {
         onOpenAdmin={() => setIsAdminDashboardOpen(true)}
         onOpenLibrary={(tab) => navigateTo({ view: 'library', libraryTab: tab })}
         onOpenProfile={() => navigateTo({ view: 'profile' })}
-        onOpenCreateModal={() => {
-          if (!currentUser) {
-            handleRequireAuth('Connectez-vous pour créer et publier une vidéo sur MK.');
-            return;
-          }
-          setIsCreateModalOpen(true);
-        }}
+        onOpenCreateModal={() => setIsCreateModalOpen(true)}
         theme={theme}
         onToggleTheme={() => setTheme(theme === 'dark' ? 'light' : 'dark')}
         onToggleFilters={() => setIsFiltersOpen(!isFiltersOpen)}
@@ -298,13 +320,7 @@ export default function App() {
           currentUser={currentUser}
           onOpenAdmin={() => setIsAdminDashboardOpen(true)}
           onRequireAuth={handleRequireAuth}
-          onOpenCreateModal={() => {
-            if (!currentUser) {
-              handleRequireAuth('Connectez-vous pour créer et publier une vidéo sur MK.');
-              return;
-            }
-            setIsCreateModalOpen(true);
-          }}
+          onOpenCreateModal={() => setIsCreateModalOpen(true)}
         />
 
         {/* Dynamic Center Stage Content (Fluid YouTube Feed) */}

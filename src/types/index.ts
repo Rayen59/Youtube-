@@ -20,6 +20,9 @@ export interface Video {
   dislikesCount: number;
   commentsCount: number;
   resolution: '4K' | '1080p' | '720p';
+  fallbackUrls?: string[];
+  isFromGallery?: boolean;
+  fileSizeMb?: number;
 }
 
 export interface CommentReply {
