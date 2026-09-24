@@ -1,5 +1,12 @@
 import React, { useState, useRef } from 'react';
-import { CheckCircle2, Clock, Eye, Sparkles } from 'lucide-react';
+import {
+  CheckCircle2,
+  Bookmark,
+  Share2,
+  MoreVertical,
+  Play,
+  Clock,
+} from 'lucide-react';
 import { Video } from '../../types';
 
 interface VideoCardProps {
@@ -7,28 +14,32 @@ interface VideoCardProps {
   isLoading?: boolean;
   onSelect?: (video: Video) => void;
   recommendationReason?: string;
+  onSaveQuick?: (video: Video, e: React.MouseEvent) => void;
+  onShareQuick?: (video: Video, e: React.MouseEvent) => void;
 }
 
 export const VideoCard: React.FC<VideoCardProps> = ({
   video,
   isLoading = false,
   onSelect,
-  recommendationReason,
+  onSaveQuick,
+  onShareQuick,
 }) => {
   const [isHovered, setIsHovered] = useState(false);
+  const [showOptions, setShowOptions] = useState(false);
   const hoverTimeoutRef = useRef<NodeJS.Timeout | null>(null);
+  const optionsRef = useRef<HTMLDivElement>(null);
 
   if (isLoading || !video) {
-    // Skeleton loader
+    // Pure YouTube Skeleton Loader (Matches Screenshot 2)
     return (
-      <div className="flex flex-col gap-3 animate-pulse">
-        <div className="aspect-video w-full rounded-2xl bg-white/5 border border-white/5" />
-        <div className="flex gap-3">
-          <div className="w-9 h-9 rounded-full bg-white/10 shrink-0" />
-          <div className="flex-1 space-y-2">
-            <div className="h-4 bg-white/10 rounded w-5/6" />
-            <div className="h-3 bg-white/5 rounded w-1/2" />
-            <div className="h-3 bg-white/5 rounded w-1/3" />
+      <div className="flex flex-col gap-3 animate-pulse pb-4">
+        <div className="aspect-video w-full rounded-none sm:rounded-xl bg-[#282828]" />
+        <div className="flex gap-3 px-3 sm:px-0 items-start">
+          <div className="w-9 h-9 sm:w-10 sm:h-10 rounded-full bg-[#282828] shrink-0" />
+          <div className="flex-1 space-y-2 py-0.5">
+            <div className="h-4 bg-[#282828] rounded w-11/12" />
+            <div className="h-3 bg-[#282828] rounded w-2/3" />
           </div>
         </div>
       </div>
@@ -38,16 +49,17 @@ export const VideoCard: React.FC<VideoCardProps> = ({
   const handleMouseEnter = () => {
     hoverTimeoutRef.current = setTimeout(() => {
       setIsHovered(true);
-    }, 250);
+    }, 150);
   };
 
   const handleMouseLeave = () => {
     if (hoverTimeoutRef.current) clearTimeout(hoverTimeoutRef.current);
     setIsHovered(false);
+    setShowOptions(false);
   };
 
   const formatViews = (views: number) => {
-    if (views >= 1000000) return `${(views / 1000000).toFixed(1)} M`;
+    if (views >= 1000000) return `${(views / 1000000).toFixed(1).replace('.', ',')} M de`;
     if (views >= 1000) return `${Math.round(views / 1000)} k`;
     return `${views}`;
   };
@@ -57,87 +69,117 @@ export const VideoCard: React.FC<VideoCardProps> = ({
       onClick={() => onSelect && onSelect(video)}
       onMouseEnter={handleMouseEnter}
       onMouseLeave={handleMouseLeave}
-      className="group flex flex-col gap-2.5 cursor-pointer select-none transition-all duration-200"
+      className="group flex flex-col cursor-pointer select-none relative transition-all duration-150 pb-4 sm:pb-6"
     >
-      {/* THUMBNAIL / HOVER PREVIEW CONTAINER */}
-      <div className="relative aspect-video w-full rounded-2xl overflow-hidden bg-[#181818] border border-white/5 group-hover:border-white/20 transition-all duration-300 shadow-md group-hover:shadow-2xl group-hover:-translate-y-1">
+      {/* 16:9 THUMBNAIL (YouTube pure styling - no heavy boxes) */}
+      <div className="relative aspect-video w-full overflow-hidden rounded-none sm:rounded-xl bg-[#202020]">
         {/* Main Thumbnail Image */}
         <img
           src={video.thumbnailUrl}
           alt={video.title}
           loading="lazy"
-          className={`w-full h-full object-cover transition-transform duration-500 ${
-            isHovered ? 'scale-105' : 'scale-100'
-          }`}
+          className="w-full h-full object-cover group-hover:scale-[1.02] transition-transform duration-200 ease-out"
         />
 
-        {/* Dynamic preview simulation on hover */}
+        {/* Hover preview simulation with animated red progress bar */}
         {isHovered && (
-          <div className="absolute inset-0 bg-black/40 backdrop-blur-[1px] flex flex-col justify-end p-2.5 transition-opacity">
-            <div className="h-1 w-full bg-white/20 rounded-full overflow-hidden mb-1">
+          <div className="absolute inset-0 bg-black/30 flex flex-col justify-end p-2 pointer-events-none transition-opacity duration-200">
+            <div className="h-1 w-full bg-white/20 rounded-full overflow-hidden mb-0.5">
               <div className="h-full bg-[#ff0000] w-1/3 animate-pulse" />
             </div>
-            <div className="flex items-center justify-between text-[11px] text-white font-medium">
-              <span className="flex items-center gap-1">
-                <span className="w-1.5 h-1.5 rounded-full bg-[#ff0000] animate-ping" />
-                Aperçu MK
-              </span>
-              <span>{video.durationFormatted}</span>
-            </div>
           </div>
         )}
 
-        {/* Duration badge */}
-        {!isHovered && (
-          <div className="absolute bottom-2 right-2 px-1.5 py-0.5 rounded-md bg-black/85 text-white text-[11px] font-bold font-mono tracking-tight backdrop-blur-xs">
-            {video.durationFormatted}
-          </div>
-        )}
-
-        {/* Resolution Badge */}
-        <div className="absolute top-2 right-2 px-1.5 py-0.5 rounded bg-black/70 text-gray-200 text-[10px] font-bold uppercase tracking-wider backdrop-blur-xs border border-white/10">
-          {video.resolution}
+        {/* Duration badge (bottom-right - YouTube standard) */}
+        <div className="absolute bottom-2 right-2 px-1.5 py-0.5 rounded bg-black/85 text-white text-[11px] font-semibold tracking-tight font-mono backdrop-blur-xs pointer-events-none">
+          {video.durationFormatted}
         </div>
 
-        {/* AI Recommendation Badge if applicable */}
-        {recommendationReason && (
-          <div className="absolute top-2 left-2 px-2 py-0.5 rounded-full bg-[#ff0000]/90 text-white text-[10px] font-bold flex items-center gap-1 shadow-md">
-            <Sparkles className="w-3 h-3" />
-            <span>{recommendationReason}</span>
+        {/* Resolution Badge if 4K */}
+        {video.resolution === '4K' && (
+          <div className="absolute top-2 right-2 px-1.5 py-0.5 rounded bg-black/75 text-gray-200 text-[10px] font-bold uppercase tracking-wider backdrop-blur-xs pointer-events-none">
+            4K
           </div>
         )}
       </div>
 
-      {/* METADATA ROW */}
-      <div className="flex gap-3 px-0.5">
+      {/* METADATA ROW (Avatar + Title + Channel + Views - Exact YouTube Layout) */}
+      <div className="flex gap-3 pt-3 px-3 sm:px-0 items-start">
         {/* Channel Avatar */}
         <img
           src={video.channelAvatar}
           alt={video.channelTitle}
           loading="lazy"
-          className="w-9 h-9 rounded-full object-cover shrink-0 ring-1 ring-white/10 mt-0.5"
+          className="w-9 h-9 sm:w-10 sm:h-10 rounded-full object-cover shrink-0 mt-0.5 hover:opacity-90"
         />
 
-        <div className="flex-1 min-w-0">
-          {/* Video Title */}
-          <h3 className="text-sm font-semibold text-white leading-snug line-clamp-2 group-hover:text-[#ff3b30] transition-colors">
+        {/* Video Information */}
+        <div className="flex-1 min-w-0 pr-1">
+          {/* Title (2 lines max, clean YouTube font) */}
+          <h3 className="text-[14px] sm:text-[15px] font-medium text-white leading-snug line-clamp-2 group-hover:text-zinc-100 transition-colors">
             {video.title}
           </h3>
 
-          {/* Channel Name */}
-          <div className="flex items-center gap-1 mt-1 text-xs text-gray-400 group-hover:text-gray-300">
-            <span className="truncate">{video.channelTitle}</span>
-            {video.verified && (
-              <CheckCircle2 className="w-3 h-3 text-gray-400 fill-gray-400 shrink-0" />
-            )}
+          {/* Channel Name & Stats Line */}
+          <div className="text-xs text-[#aaa] mt-1 space-y-0.5">
+            <div className="flex items-center gap-1 hover:text-white transition-colors">
+              <span className="truncate">{video.channelTitle}</span>
+              {video.verified && (
+                <CheckCircle2 className="w-3.5 h-3.5 text-[#aaa] fill-[#aaa]/20 shrink-0" />
+              )}
+            </div>
+            <div className="flex items-center gap-1 font-normal text-zinc-400">
+              <span>{formatViews(video.views)} vues</span>
+              <span>•</span>
+              <span>{video.uploadDate}</span>
+            </div>
           </div>
+        </div>
 
-          {/* Views & Date */}
-          <div className="flex items-center gap-1.5 text-xs text-gray-400 mt-0.5 font-medium">
-            <span>{formatViews(video.views)} vues</span>
-            <span>•</span>
-            <span>{video.uploadDate}</span>
-          </div>
+        {/* Three Dots Context Button (⋮) */}
+        <div className="relative shrink-0" ref={optionsRef}>
+          <button
+            type="button"
+            onClick={(e) => {
+              e.stopPropagation();
+              setShowOptions(!showOptions);
+            }}
+            className="w-8 h-8 rounded-full flex items-center justify-center text-zinc-400 hover:text-white hover:bg-white/10 opacity-70 group-hover:opacity-100 transition-all cursor-pointer"
+            title="Options"
+          >
+            <MoreVertical className="w-4 h-4" />
+          </button>
+
+          {/* Quick Options Menu */}
+          {showOptions && (
+            <div
+              onClick={(e) => e.stopPropagation()}
+              className="absolute right-0 top-8 w-52 bg-[#282828] border border-[#3f3f3f] rounded-xl shadow-2xl py-1 z-40 text-xs text-zinc-200 animate-in fade-in zoom-in-95 duration-100"
+            >
+              <button
+                type="button"
+                onClick={(e) => {
+                  setShowOptions(false);
+                  onSaveQuick && onSaveQuick(video, e);
+                }}
+                className="w-full text-left px-3.5 py-2.5 hover:bg-white/10 flex items-center gap-2.5 transition-colors cursor-pointer"
+              >
+                <Bookmark className="w-4 h-4 text-zinc-400" />
+                <span>Enregistrer dans Favoris</span>
+              </button>
+              <button
+                type="button"
+                onClick={(e) => {
+                  setShowOptions(false);
+                  onShareQuick && onShareQuick(video, e);
+                }}
+                className="w-full text-left px-3.5 py-2.5 hover:bg-white/10 flex items-center gap-2.5 transition-colors cursor-pointer"
+              >
+                <Share2 className="w-4 h-4 text-zinc-400" />
+                <span>Partager la vidéo</span>
+              </button>
+            </div>
+          )}
         </div>
       </div>
     </div>

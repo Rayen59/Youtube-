@@ -1,6 +1,6 @@
 import React from 'react';
 import { CATEGORIES } from '../../data/mockVideos';
-import { Sparkles, Calendar, Eye, Clock, ArrowUpDown } from 'lucide-react';
+import { Clock, ArrowUpDown, SlidersHorizontal } from 'lucide-react';
 
 interface CategoryChipsProps {
   selectedCategory: string;
@@ -22,19 +22,19 @@ export const CategoryChips: React.FC<CategoryChipsProps> = ({
   onSelectDurationFilter,
 }) => {
   return (
-    <div className="space-y-3 mb-6">
-      {/* Category Pills Slider */}
-      <div className="flex items-center gap-2 overflow-x-auto pb-2 scrollbar-none select-none">
+    <div className="space-y-3 mb-4">
+      {/* Category Pills Slider (Fluid YouTube dark mode style) */}
+      <div className="flex items-center gap-2.5 overflow-x-auto pb-1 scrollbar-none select-none">
         {CATEGORIES.map((category) => {
           const isSelected = selectedCategory === category;
           return (
             <button
               key={category}
               onClick={() => onSelectCategory(category)}
-              className={`px-4 py-2 rounded-2xl text-xs font-bold whitespace-nowrap transition-all cursor-pointer ${
+              className={`px-3.5 py-1.5 rounded-lg text-xs sm:text-sm font-medium whitespace-nowrap transition-all cursor-pointer ${
                 isSelected
-                  ? 'bg-white text-black shadow-md'
-                  : 'bg-[#222222] hover:bg-[#2c2c2c] text-gray-200 border border-white/5'
+                  ? 'bg-white text-black font-semibold shadow-sm'
+                  : 'bg-[#272727] hover:bg-[#383838] text-zinc-100 hover:text-white'
               }`}
             >
               {category}
@@ -45,12 +45,12 @@ export const CategoryChips: React.FC<CategoryChipsProps> = ({
 
       {/* Advanced Filters Expandable Bar */}
       {isFiltersOpen && (
-        <div className="p-4 bg-[#181818] border border-white/10 rounded-2xl animate-in fade-in slide-in-from-top-2 duration-150 grid grid-cols-1 sm:grid-cols-2 gap-4">
+        <div className="p-4 bg-[#1f1f1f] border border-[#333333] rounded-2xl animate-in fade-in slide-in-from-top-2 duration-150 grid grid-cols-1 sm:grid-cols-2 gap-4">
           {/* Sort By */}
           <div>
-            <span className="text-xs font-bold text-gray-400 block mb-2 flex items-center gap-1.5">
+            <span className="text-xs font-bold text-zinc-400 block mb-2 flex items-center gap-1.5">
               <ArrowUpDown className="w-3.5 h-3.5 text-[#ff0000]" />
-              Trier par
+              Trier les vidéos par :
             </span>
             <div className="flex flex-wrap gap-2">
               {[
@@ -62,10 +62,10 @@ export const CategoryChips: React.FC<CategoryChipsProps> = ({
                 <button
                   key={s.id}
                   onClick={() => onSelectSortBy(s.id as any)}
-                  className={`px-3 py-1.5 rounded-xl text-xs font-semibold transition-colors ${
+                  className={`px-3 py-1.5 rounded-xl text-xs font-semibold transition-colors cursor-pointer ${
                     sortBy === s.id
                       ? 'bg-[#ff0000] text-white shadow-sm'
-                      : 'bg-white/5 hover:bg-white/10 text-gray-300'
+                      : 'bg-white/5 hover:bg-white/10 text-zinc-300'
                   }`}
                 >
                   {s.label}
@@ -76,9 +76,9 @@ export const CategoryChips: React.FC<CategoryChipsProps> = ({
 
           {/* Duration Filter */}
           <div>
-            <span className="text-xs font-bold text-gray-400 block mb-2 flex items-center gap-1.5">
+            <span className="text-xs font-bold text-zinc-400 block mb-2 flex items-center gap-1.5">
               <Clock className="w-3.5 h-3.5 text-[#ff0000]" />
-              Filtre de Durée
+              Filtre de Durée :
             </span>
             <div className="flex flex-wrap gap-2">
               {[
@@ -89,10 +89,10 @@ export const CategoryChips: React.FC<CategoryChipsProps> = ({
                 <button
                   key={d.id}
                   onClick={() => onSelectDurationFilter(d.id as any)}
-                  className={`px-3 py-1.5 rounded-xl text-xs font-semibold transition-colors ${
+                  className={`px-3 py-1.5 rounded-xl text-xs font-semibold transition-colors cursor-pointer ${
                     durationFilter === d.id
                       ? 'bg-[#ff0000] text-white shadow-sm'
-                      : 'bg-white/5 hover:bg-white/10 text-gray-300'
+                      : 'bg-white/5 hover:bg-white/10 text-zinc-300'
                   }`}
                 >
                   {d.label}

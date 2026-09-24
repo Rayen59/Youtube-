@@ -16,16 +16,19 @@ import { UserLibraryView } from './components/user/UserLibraryView';
 import { UserProfileView } from './components/user/UserProfileView';
 import { AdminDashboard } from './components/admin/AdminDashboard';
 import { AuthModal } from './components/auth/AuthModal';
-import { Video, User } from './types';
+import { CreateVideoModal } from './components/video/CreateVideoModal';
+import { Video, User, UserFavorites } from './types';
 import { MOCK_VIDEOS } from './data/mockVideos';
 import {
   initializeNamespaceSystem,
   getCurrentSession,
   clearSession,
   logUserActivity,
+  getUserFile,
+  saveUserFile,
 } from './storage/userNamespace';
-import { getPersonalizedRecommendations } from './services/recommendationEngine';
-import { Sparkles, Flame, Tv, Film } from 'lucide-react';
+import { getCustomVideos, saveCustomVideo } from './services/customVideosStorage';
+import { CheckCircle2, Video as VideoIcon } from 'lucide-react';
 
 interface NavigationState {
   view: 'home' | 'watch' | 'trending' | 'subscriptions' | 'library' | 'profile' | 'admin';
@@ -38,7 +41,10 @@ export default function App() {
   const [currentUser, setCurrentUser] = useState<User | null>(null);
   const [theme, setTheme] = useState<'dark' | 'light'>('dark');
 
-  // Navigation state & history stack for the ALWAYS VISIBLE back arrow
+  // Custom user created videos
+  const [customVideos, setCustomVideos] = useState<Video[]>([]);
+
+  // Navigation state & history stack
   const [currentNav, setCurrentNav] = useState<NavigationState>({ view: 'home' });
   const [historyStack, setHistoryStack] = useState<NavigationState[]>([]);
 
@@ -54,11 +60,15 @@ export default function App() {
   const [authModalMode, setAuthModalMode] = useState<'login' | 'register'>('login');
   const [authRestrictionMessage, setAuthRestrictionMessage] = useState<string | null>(null);
   const [isAdminDashboardOpen, setIsAdminDashboardOpen] = useState(false);
+  const [isCreateModalOpen, setIsCreateModalOpen] = useState(false);
 
-  // Perceived loading simulation for skeleton cards
+  // Toast notification
+  const [toastMessage, setToastMessage] = useState<string | null>(null);
+
+  // Perceived loading simulation for smooth skeleton cards
   const [isLoadingFeed, setIsLoadingFeed] = useState(false);
 
-  // Initialize storage & session
+  // Initialize storage, session & custom videos
   useEffect(() => {
     initializeNamespaceSystem().then(() => {
       const session = getCurrentSession();
@@ -66,6 +76,7 @@ export default function App() {
         setCurrentUser(session);
       }
     });
+    setCustomVideos(getCustomVideos());
   }, []);
 
   // Sync theme
@@ -79,6 +90,18 @@ export default function App() {
     }
   }, [theme]);
 
+  const showToast = (msg: string) => {
+    setToastMessage(msg);
+    setTimeout(() => {
+      setToastMessage(null);
+    }, 3000);
+  };
+
+  // Combine default mock videos and user created videos
+  const allVideos = useMemo(() => {
+    return [...customVideos, ...MOCK_VIDEOS];
+  }, [customVideos]);
+
   // Navigate to a new state and push to history
   const navigateTo = useCallback((nextState: NavigationState) => {
     setHistoryStack((prev) => [...prev, currentNav]);
@@ -86,10 +109,14 @@ export default function App() {
     window.scrollTo({ top: 0, behavior: 'smooth' });
   }, [currentNav]);
 
-  // ALWAYS VISIBLE BACK BUTTON HANDLER
+  // Back button handler
   const handleGoBack = useCallback(() => {
     if (isAdminDashboardOpen) {
       setIsAdminDashboardOpen(false);
+      return;
+    }
+    if (isCreateModalOpen) {
+      setIsCreateModalOpen(false);
       return;
     }
 
@@ -99,11 +126,10 @@ export default function App() {
       setCurrentNav(previousState);
       window.scrollTo({ top: 0, behavior: 'smooth' });
     } else {
-      // If stack is empty, return to home
       setCurrentNav({ view: 'home' });
       window.scrollTo({ top: 0, behavior: 'smooth' });
     }
-  }, [historyStack, isAdminDashboardOpen]);
+  }, [historyStack, isAdminDashboardOpen, isCreateModalOpen]);
 
   const handleGoHome = useCallback(() => {
     if (currentNav.view !== 'home' || currentNav.selectedVideo) {
@@ -112,6 +138,7 @@ export default function App() {
     setSearchQuery('');
     setSelectedCategory('Tous');
     setIsAdminDashboardOpen(false);
+    setIsCreateModalOpen(false);
   }, [currentNav, navigateTo]);
 
   // Video selection
@@ -119,7 +146,7 @@ export default function App() {
     navigateTo({ view: 'watch', selectedVideo: video });
   }, [navigateTo]);
 
-  // Trigger Auth modal with optional restriction warning
+  // Trigger Auth modal with restriction warning
   const handleRequireAuth = (message: string) => {
     setAuthRestrictionMessage(message);
     setAuthModalMode('login');
@@ -139,9 +166,10 @@ export default function App() {
     if (currentNav.view === 'profile' || currentNav.view === 'admin') {
       setCurrentNav({ view: 'home' });
     }
+    showToast('Vous avez été déconnecté.');
   };
 
-  // Search handler with simulated loader
+  // Search handler
   const handleSearch = (query: string) => {
     setSearchQuery(query);
     if (currentUser && query.trim().length > 2) {
@@ -152,9 +180,51 @@ export default function App() {
     }
   };
 
+  // Handle Video Creation
+  const handleVideoCreated = (newVideo: Video) => {
+    saveCustomVideo(newVideo);
+    setCustomVideos((prev) => [newVideo, ...prev]);
+    showToast(`Vidéo "${newVideo.title}" publiée avec succès !`);
+    handleSelectVideo(newVideo);
+  };
+
+  // Quick Save
+  const handleQuickSave = (video: Video, e: React.MouseEvent) => {
+    if (!currentUser) {
+      handleRequireAuth('Connectez-vous pour enregistrer cette vidéo dans vos favoris.');
+      return;
+    }
+    const favorites = getUserFile<UserFavorites>(currentUser.id, 'favorites.json') || {
+      likedVideoIds: [],
+      dislikedVideoIds: [],
+      savedVideoIds: [],
+      downloadedVideos: [],
+      customPlaylists: [],
+    };
+    if (!favorites.savedVideoIds.includes(video.id)) {
+      favorites.savedVideoIds.push(video.id);
+      saveUserFile(currentUser.id, 'favorites.json', favorites);
+      showToast('Ajouté à vos Favoris');
+    } else {
+      favorites.savedVideoIds = favorites.savedVideoIds.filter((id) => id !== video.id);
+      saveUserFile(currentUser.id, 'favorites.json', favorites);
+      showToast('Retiré de vos Favoris');
+    }
+  };
+
+  // Quick Share
+  const handleQuickShare = (video: Video, e: React.MouseEvent) => {
+    if (!currentUser) {
+      handleRequireAuth('Connectez-vous pour partager cette vidéo avec la communauté.');
+      return;
+    }
+    navigator.clipboard.writeText(`${window.location.origin}/#watch?id=${video.id}`);
+    showToast('Lien copié dans le presse-papier !');
+  };
+
   // Filtered & Sorted Videos
   const filteredVideos = useMemo(() => {
-    return MOCK_VIDEOS.filter((v) => {
+    return allVideos.filter((v) => {
       // 1. Search Query
       if (searchQuery.trim()) {
         const q = searchQuery.toLowerCase().trim();
@@ -180,25 +250,20 @@ export default function App() {
     }).sort((a, b) => {
       if (sortBy === 'views') return b.views - a.views;
       if (sortBy === 'duration') return b.duration - a.duration;
-      if (sortBy === 'date') return 0; // maintain upload freshness
+      if (sortBy === 'date') return 0;
       return 0;
     });
-  }, [searchQuery, selectedCategory, durationFilter, sortBy]);
-
-  // Personalized recommendations
-  const aiRecommended = useMemo(() => {
-    return getPersonalizedRecommendations(currentUser ? currentUser.id : null);
-  }, [currentUser]);
+  }, [allVideos, searchQuery, selectedCategory, durationFilter, sortBy]);
 
   return (
-    <div className={`min-h-screen ${theme === 'dark' ? 'bg-[#0f0f0f] text-white' : 'bg-[#f4f4f5] text-black'} selection:bg-[#ff0000] selection:text-white transition-colors`}>
+    <div className={`min-h-screen ${theme === 'dark' ? 'bg-[#0f0f0f] text-white' : 'bg-[#f8f9fa] text-black'} selection:bg-[#ff0000] selection:text-white transition-colors`}>
       
       {/* 1. SPLASH SCREEN (2 seconds animation) */}
       {showSplash && (
         <SplashScreen onComplete={() => setShowSplash(false)} />
       )}
 
-      {/* 2. FIXED HEADER */}
+      {/* 2. FIXED HEADER (YOUTUBE EXACT REPLICA OF SCREENSHOT 2) */}
       <Header
         currentUser={currentUser}
         canGoBack={historyStack.length > 0 || currentNav.view !== 'home'}
@@ -210,6 +275,13 @@ export default function App() {
         onOpenAdmin={() => setIsAdminDashboardOpen(true)}
         onOpenLibrary={(tab) => navigateTo({ view: 'library', libraryTab: tab })}
         onOpenProfile={() => navigateTo({ view: 'profile' })}
+        onOpenCreateModal={() => {
+          if (!currentUser) {
+            handleRequireAuth('Connectez-vous pour créer et publier une vidéo sur MK.');
+            return;
+          }
+          setIsCreateModalOpen(true);
+        }}
         theme={theme}
         onToggleTheme={() => setTheme(theme === 'dark' ? 'light' : 'dark')}
         onToggleFilters={() => setIsFiltersOpen(!isFiltersOpen)}
@@ -217,7 +289,7 @@ export default function App() {
       />
 
       {/* 3. MAIN WORKSPACE WITH DESKTOP SIDEBAR / MOBILE BOTTOM NAV */}
-      <div className="pt-16 pb-20 md:pb-6 flex min-h-[calc(100vh-64px)]">
+      <div className="pt-14 sm:pt-16 pb-16 md:pb-6 flex min-h-[calc(100vh-64px)]">
         
         {/* Navigation Component */}
         <Navigation
@@ -226,93 +298,74 @@ export default function App() {
           currentUser={currentUser}
           onOpenAdmin={() => setIsAdminDashboardOpen(true)}
           onRequireAuth={handleRequireAuth}
+          onOpenCreateModal={() => {
+            if (!currentUser) {
+              handleRequireAuth('Connectez-vous pour créer et publier une vidéo sur MK.');
+              return;
+            }
+            setIsCreateModalOpen(true);
+          }}
         />
 
-        {/* Dynamic Center Stage Content */}
-        <main className="flex-1 md:ml-56 lg:ml-64 px-3 sm:px-6 py-4 overflow-x-hidden">
+        {/* Dynamic Center Stage Content (Fluid YouTube Feed) */}
+        <main className="flex-1 md:ml-56 lg:ml-64 px-0 sm:px-4 lg:px-6 py-2 sm:py-3 overflow-x-hidden">
           
-          {/* VIEW: HOME FEED */}
+          {/* VIEW: HOME FEED (PURE YOUTUBE CONTINUOUS FEED) */}
           {currentNav.view === 'home' && (
-            <div className="space-y-6 max-w-7xl mx-auto">
+            <div className="max-w-[1920px] mx-auto space-y-3 sm:space-y-4">
               
-              {/* Category Pills & Filters */}
-              <CategoryChips
-                selectedCategory={selectedCategory}
-                onSelectCategory={(cat) => {
-                  setSelectedCategory(cat);
-                  setIsLoadingFeed(true);
-                  setTimeout(() => setIsLoadingFeed(false), 200);
-                }}
-                isFiltersOpen={isFiltersOpen}
-                sortBy={sortBy}
-                onSelectSortBy={setSortBy}
-                durationFilter={durationFilter}
-                onSelectDurationFilter={setDurationFilter}
-              />
+              {/* Category Pills Slider (Sticky below header, exact match to Screenshot 2) */}
+              <div className="px-3 sm:px-0">
+                <CategoryChips
+                  selectedCategory={selectedCategory}
+                  onSelectCategory={(cat) => {
+                    setSelectedCategory(cat);
+                    setIsLoadingFeed(true);
+                    setTimeout(() => setIsLoadingFeed(false), 150);
+                  }}
+                  isFiltersOpen={isFiltersOpen}
+                  sortBy={sortBy}
+                  onSelectSortBy={setSortBy}
+                  durationFilter={durationFilter}
+                  onSelectDurationFilter={setDurationFilter}
+                />
+              </div>
 
-              {/* SECTION: RECOMMANDÉ POUR VOUS (IA) */}
-              {!searchQuery && selectedCategory === 'Tous' && (
-                <div className="p-4 sm:p-5 bg-gradient-to-br from-[#181818] via-[#1a1a1a] to-[#202020] rounded-3xl border border-white/10 shadow-xl">
-                  <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-2 mb-4 pb-3 border-b border-white/5">
-                    <div>
-                      <h2 className="text-base sm:text-lg font-black text-white flex items-center gap-2">
-                        <Sparkles className="w-5 h-5 text-[#ff0000]" />
-                        <span>Recommandé pour vous (Intelligence Artificielle MK)</span>
-                      </h2>
-                      <p className="text-xs text-gray-400 mt-0.5">
-                        {currentUser
-                          ? `Sélection personnalisée selon vos ${currentUser.username ? 'goûts' : ''} et votre historique récent`
-                          : 'Tendances calculées en continu par notre algorithme de recommandation'}
-                      </p>
-                    </div>
-
-                    <span className="text-[11px] font-mono text-[#ff4444] bg-[#ff0000]/10 border border-[#ff0000]/20 px-2.5 py-1 rounded-full self-start sm:self-center font-bold">
-                      Algorithme Hybride v2.4
-                    </span>
-                  </div>
-
-                  {/* Top 3 AI Picks */}
-                  <div className="grid grid-cols-1 sm:grid-cols-2 md:grid-cols-3 gap-4">
-                    {aiRecommended.slice(0, 3).map(({ video, matchReasons }) => (
-                      <VideoCard
-                        key={video.id}
-                        video={video}
-                        onSelect={handleSelectVideo}
-                        recommendationReason={matchReasons[0]}
-                      />
-                    ))}
-                  </div>
+              {/* Search Query indicator if searching */}
+              {searchQuery && (
+                <div className="px-3 sm:px-0 flex items-center justify-between pb-2 border-b border-[#282828]">
+                  <h2 className="text-sm sm:text-base font-semibold text-white">
+                    Résultats pour <span className="text-[#ff0000]">"{searchQuery}"</span>
+                  </h2>
+                  <span className="text-xs text-zinc-400">
+                    {filteredVideos.length} vidéo{filteredVideos.length > 1 ? 's' : ''}
+                  </span>
                 </div>
               )}
 
-              {/* ALL VIDEOS GRID */}
-              <div>
-                <div className="flex items-center justify-between mb-4">
-                  <h2 className="text-base sm:text-lg font-black text-white">
-                    {searchQuery ? `Résultats pour "${searchQuery}"` : 'Toutes les Vidéos'}
-                  </h2>
-                  <span className="text-xs text-gray-400 font-medium">
-                    {filteredVideos.length} vidéos disponibles
-                  </span>
+              {/* CONTINUOUS VIDEO GRID (1 Col on mobile edge-to-edge, 2-4 cols on desktop) */}
+              {filteredVideos.length === 0 ? (
+                <div className="p-16 text-center text-zinc-400 text-sm">
+                  <VideoIcon className="w-12 h-12 text-zinc-600 mx-auto mb-3" />
+                  <p className="text-base font-semibold text-white">Aucune vidéo trouvée</p>
+                  <p className="text-xs text-zinc-400 mt-1">
+                    Essayez un autre mot-clé ou réinitialisez les filtres.
+                  </p>
                 </div>
-
-                {filteredVideos.length === 0 ? (
-                  <div className="p-12 text-center text-gray-400 text-sm">
-                    Aucune vidéo trouvée pour ces critères de recherche.
-                  </div>
-                ) : (
-                  <div className="grid grid-cols-1 sm:grid-cols-2 md:grid-cols-3 lg:grid-cols-4 gap-4">
-                    {filteredVideos.map((video) => (
-                      <VideoCard
-                        key={video.id}
-                        video={video}
-                        isLoading={isLoadingFeed}
-                        onSelect={handleSelectVideo}
-                      />
-                    ))}
-                  </div>
-                )}
-              </div>
+              ) : (
+                <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4 gap-y-2 sm:gap-x-4 sm:gap-y-8">
+                  {filteredVideos.map((video) => (
+                    <VideoCard
+                      key={video.id}
+                      video={video}
+                      isLoading={isLoadingFeed}
+                      onSelect={handleSelectVideo}
+                      onSaveQuick={handleQuickSave}
+                      onShareQuick={handleQuickShare}
+                    />
+                  ))}
+                </div>
+              )}
 
             </div>
           )}
@@ -329,33 +382,41 @@ export default function App() {
 
           {/* VIEW: TRENDING */}
           {currentNav.view === 'trending' && (
-            <TrendingView onSelectVideo={handleSelectVideo} />
+            <div className="px-3 sm:px-0">
+              <TrendingView onSelectVideo={handleSelectVideo} />
+            </div>
           )}
 
           {/* VIEW: SUBSCRIPTIONS */}
           {currentNav.view === 'subscriptions' && (
-            <SubscriptionsView
-              currentUser={currentUser}
-              onSelectVideo={handleSelectVideo}
-            />
+            <div className="px-3 sm:px-0">
+              <SubscriptionsView
+                currentUser={currentUser}
+                onSelectVideo={handleSelectVideo}
+              />
+            </div>
           )}
 
           {/* VIEW: LIBRARY */}
           {currentNav.view === 'library' && (
-            <UserLibraryView
-              currentUser={currentUser}
-              initialTab={currentNav.libraryTab || 'history'}
-              onSelectVideo={handleSelectVideo}
-              onRequireAuth={handleRequireAuth}
-            />
+            <div className="px-3 sm:px-0">
+              <UserLibraryView
+                currentUser={currentUser}
+                initialTab={currentNav.libraryTab || 'history'}
+                onSelectVideo={handleSelectVideo}
+                onRequireAuth={handleRequireAuth}
+              />
+            </div>
           )}
 
           {/* VIEW: PROFILE & ISOLATED NAMESPACE */}
           {currentNav.view === 'profile' && (
-            <UserProfileView
-              currentUser={currentUser}
-              onRequireAuth={handleRequireAuth}
-            />
+            <div className="px-3 sm:px-0">
+              <UserProfileView
+                currentUser={currentUser}
+                onRequireAuth={handleRequireAuth}
+              />
+            </div>
           )}
 
         </main>
@@ -367,7 +428,7 @@ export default function App() {
           currentUser={currentUser}
           onClose={() => setIsAdminDashboardOpen(false)}
           onSelectVideo={(id) => {
-            const v = MOCK_VIDEOS.find(vid => vid.id === id);
+            const v = allVideos.find((vid) => vid.id === id);
             if (v) {
               setIsAdminDashboardOpen(false);
               handleSelectVideo(v);
@@ -376,7 +437,15 @@ export default function App() {
         />
       )}
 
-      {/* 5. AUTHENTICATION MODAL */}
+      {/* 5. CREATE VIDEO / PAGE MODAL */}
+      <CreateVideoModal
+        isOpen={isCreateModalOpen}
+        onClose={() => setIsCreateModalOpen(false)}
+        onVideoCreated={handleVideoCreated}
+        currentUser={currentUser}
+      />
+
+      {/* 6. AUTHENTICATION MODAL */}
       <AuthModal
         isOpen={isAuthModalOpen}
         initialMode={authModalMode}
@@ -384,9 +453,18 @@ export default function App() {
         onSuccess={(user) => {
           setCurrentUser(user);
           setIsAuthModalOpen(false);
+          showToast(`Bienvenue, ${user.username} !`);
         }}
         restrictionMessage={authRestrictionMessage}
       />
+
+      {/* 7. TOAST NOTIFICATION */}
+      {toastMessage && (
+        <div className="fixed bottom-20 sm:bottom-6 right-4 sm:right-6 z-50 bg-[#1f1f1f] text-white text-xs sm:text-sm font-semibold px-4 py-3 rounded-2xl border border-white/20 shadow-2xl flex items-center gap-2.5 animate-in fade-in slide-in-from-bottom-3 duration-200">
+          <CheckCircle2 className="w-4 h-4 text-[#ff0000] shrink-0" />
+          <span>{toastMessage}</span>
+        </div>
+      )}
 
     </div>
   );
