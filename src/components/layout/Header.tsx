@@ -16,14 +16,17 @@ import {
   Video as VideoPlusIcon,
   Plus,
   Bell,
+  BellRing,
+  CheckCheck,
   Mic,
   MicOff,
-  Volume2,
   ArrowUpLeft,
   ShieldCheck,
   Trash2,
+  Sparkles,
+  Check,
 } from 'lucide-react';
-import { User } from '../../types';
+import { User, AppNotification } from '../../types';
 import { MOCK_VIDEOS } from '../../data/mockVideos';
 import {
   evaluateLocalHeuristics,
@@ -31,12 +34,23 @@ import {
   ModerationResult,
 } from '../../services/aiModerationService';
 import {
+  transcribeAudioBlob,
+  translateVoiceText,
+  VoiceLangCode,
+} from '../../services/voiceService';
+import {
   logUserActivity,
   getSearchHistory,
   addSearchHistoryItem,
   deleteSearchHistoryItem,
   clearAllSearchHistory,
   SearchHistoryItem,
+  getNotifications,
+  addNotification,
+  markNotificationAsRead,
+  markAllNotificationsAsRead,
+  deleteNotification,
+  clearAllNotifications,
 } from '../../storage/userNamespace';
 
 interface HeaderProps {
@@ -51,6 +65,7 @@ interface HeaderProps {
   onOpenLibrary: (tab?: string) => void;
   onOpenProfile: () => void;
   onOpenCreateModal: () => void;
+  onSelectVideoById?: (videoId: string) => void;
   theme: 'dark' | 'light';
   onToggleTheme: () => void;
   onToggleFilters: () => void;
@@ -59,6 +74,7 @@ interface HeaderProps {
 
 // Type declaration for browser Web Speech API
 interface SpeechRecognitionEvent extends Event {
+  resultIndex: number;
   results: {
     [index: number]: {
       [index: number]: {
@@ -94,6 +110,7 @@ export const Header: React.FC<HeaderProps> = ({
   onOpenLibrary,
   onOpenProfile,
   onOpenCreateModal,
+  onSelectVideoById,
   theme,
   onToggleTheme,
   onToggleFilters,
@@ -104,13 +121,30 @@ export const Header: React.FC<HeaderProps> = ({
   const [isMobileSearchActive, setIsMobileSearchActive] = useState(false);
   const [isUserMenuOpen, setIsUserMenuOpen] = useState(false);
 
-  // Voice Search Modal & Microphone states
+  // Notifications Panel state
+  const [isNotifOpen, setIsNotifOpen] = useState(false);
+  const [notifications, setNotifications] = useState<AppNotification[]>(() =>
+    getNotifications(currentUser?.id)
+  );
+  const [browserPushStatus, setBrowserPushStatus] = useState<string>(
+    typeof window !== 'undefined' && 'Notification' in window
+      ? Notification.permission
+      : 'unsupported'
+  );
+
+  // Voice-to-Text (Speech-to-Text) & Voice Translation Modal states
   const [isVoiceModalOpen, setIsVoiceModalOpen] = useState(false);
   const [isListening, setIsListening] = useState(false);
+  const [isTranscribingAI, setIsTranscribingAI] = useState(false);
   const [voiceTranscript, setVoiceTranscript] = useState('');
-  const [voiceStatusText, setVoiceStatusText] = useState('Parlez maintenant...');
+  const [originalVoiceText, setOriginalVoiceText] = useState('');
+  const [voiceLang, setVoiceLang] = useState<VoiceLangCode>('fr-FR');
+  const [autoTranslateVoice, setAutoTranslateVoice] = useState<boolean>(true);
+  const [voiceStatusText, setVoiceStatusText] = useState(
+    'Parlez maintenant : votre voix est transcrite et traduite en texte en direct...'
+  );
   const [voiceError, setVoiceError] = useState<string | null>(null);
-  const [audioLevels, setAudioLevels] = useState<number[]>([20, 35, 50, 30, 60, 40, 25]);
+  const [audioLevels, setAudioLevels] = useState<number[]>([25, 45, 70, 40, 80, 50, 30]);
 
   // AI Moderation Block Modal state
   const [blockedAlert, setBlockedAlert] = useState<ModerationResult | null>(null);
@@ -122,6 +156,34 @@ export const Header: React.FC<HeaderProps> = ({
   useEffect(() => {
     setRecentSearches(getSearchHistory(currentUser?.id));
   }, [currentUser?.id, isSearchFocused, isMobileSearchActive]);
+
+  // Sync notifications in real-time
+  useEffect(() => {
+    const syncNotifs = () => {
+      setNotifications(getNotifications(currentUser?.id));
+    };
+    syncNotifs();
+    window.addEventListener('mk-notifications-updated', syncNotifs);
+    return () => window.removeEventListener('mk-notifications-updated', syncNotifs);
+  }, [currentUser?.id]);
+
+  const unreadNotifCount = notifications.filter((n) => !n.read).length;
+
+  const handleRequestBrowserPush = async () => {
+    if (typeof window === 'undefined' || !('Notification' in window)) return;
+    try {
+      const perm = await Notification.requestPermission();
+      setBrowserPushStatus(perm);
+      if (perm === 'granted') {
+        addNotification({
+          userId: currentUser?.id,
+          title: 'Notifications Navigateur Activées',
+          message: 'Vous recevrez désormais les alertes MK Streaming en temps réel.',
+          type: 'system',
+        });
+      }
+    } catch {}
+  };
 
   const handleDeleteSingleSearch = (idOrText: string, e: React.MouseEvent) => {
     e.stopPropagation();
@@ -138,14 +200,17 @@ export const Header: React.FC<HeaderProps> = ({
   };
 
   const menuRef = useRef<HTMLDivElement>(null);
+  const notifRef = useRef<HTMLDivElement>(null);
   const searchInputRef = useRef<HTMLInputElement>(null);
   const mobileInputRef = useRef<HTMLInputElement>(null);
   const recognitionRef = useRef<SpeechRecognitionInstance | null>(null);
   const mediaStreamRef = useRef<MediaStream | null>(null);
-  const audioContextRef = useRef<AudioContext | null>(null);
-  const animFrameRef = useRef<number | null>(null);
   const mediaRecorderRef = useRef<MediaRecorder | null>(null);
+  const audioContextRef = useRef<AudioContext | null>(null);
   const audioChunksRef = useRef<Blob[]>([]);
+  const pulseIntervalRef = useRef<number | null>(null);
+  const autoSubmitTimeoutRef = useRef<number | null>(null);
+  const speechProducedResultRef = useRef<boolean>(false);
 
   // Focus mobile input when mobile search is activated
   useEffect(() => {
@@ -163,7 +228,6 @@ export const Header: React.FC<HeaderProps> = ({
         onSearch('');
         return;
       }
-      // Instant 0ms AI lexical check while typing
       const check = evaluateLocalHeuristics(searchQuery);
       if (check.blocked) {
         setBlockedAlert(check);
@@ -177,39 +241,49 @@ export const Header: React.FC<HeaderProps> = ({
         return;
       }
       onSearch(searchQuery);
-    }, 220);
+    }, 180);
 
     return () => clearTimeout(handler);
   }, [searchQuery, onSearch, currentUser]);
 
-  // Click outside listener for user menu
+  // Click outside listener for user menu and notifications menu
   useEffect(() => {
     const handleClickOutside = (event: MouseEvent) => {
       if (menuRef.current && !menuRef.current.contains(event.target as Node)) {
         setIsUserMenuOpen(false);
+      }
+      if (notifRef.current && !notifRef.current.contains(event.target as Node)) {
+        setIsNotifOpen(false);
       }
     };
     document.addEventListener('mousedown', handleClickOutside);
     return () => document.removeEventListener('mousedown', handleClickOutside);
   }, []);
 
-  // Cleanup microphone & recognition on unmount
-  const stopMicrophoneResources = () => {
+  // Cleanup microphone & recognition resources without losing recorded audio
+  const stopMicrophoneResources = (keepRecorderStopping = false) => {
     setIsListening(false);
+    if (autoSubmitTimeoutRef.current) {
+      window.clearTimeout(autoSubmitTimeoutRef.current);
+      autoSubmitTimeoutRef.current = null;
+    }
+    if (pulseIntervalRef.current) {
+      window.clearInterval(pulseIntervalRef.current);
+      pulseIntervalRef.current = null;
+    }
     if (recognitionRef.current) {
       try {
+        recognitionRef.current.onend = null;
+        recognitionRef.current.onerror = null;
         recognitionRef.current.stop();
       } catch {}
       recognitionRef.current = null;
     }
-    if (mediaRecorderRef.current && mediaRecorderRef.current.state !== 'inactive') {
+    if (!keepRecorderStopping && mediaRecorderRef.current && mediaRecorderRef.current.state !== 'inactive') {
       try {
+        mediaRecorderRef.current.onstop = null;
         mediaRecorderRef.current.stop();
       } catch {}
-    }
-    if (animFrameRef.current) {
-      cancelAnimationFrame(animFrameRef.current);
-      animFrameRef.current = null;
     }
     if (audioContextRef.current) {
       try {
@@ -227,14 +301,48 @@ export const Header: React.FC<HeaderProps> = ({
     return () => stopMicrophoneResources();
   }, []);
 
-  // Process a finalized voice transcript with AI Safety Check
-  const finalizeVoiceSearch = async (spokenText: string) => {
+  // Translate existing voice transcript into target language
+  const handleTranslateTranscript = async (
+    textToTranslate: string,
+    targetLang: VoiceLangCode
+  ) => {
+    const cleaned = textToTranslate.trim();
+    if (!cleaned) return;
+    setIsTranscribingAI(true);
+    setVoiceStatusText(
+      `Traduction vocale en cours vers ${
+        targetLang === 'fr-FR'
+          ? 'le Français 🇫🇷'
+          : targetLang === 'en-US'
+          ? "l'Anglais 🇺🇸"
+          : "l'Arabe 🇹🇳"
+      }...`
+    );
+    const translated = await translateVoiceText(cleaned, targetLang);
+    setIsTranscribingAI(false);
+    if (translated) {
+      setVoiceTranscript(translated);
+      setSearchQuery(translated);
+      onSearch(translated);
+      setVoiceStatusText(
+        `Traduit avec succès en ${
+          targetLang === 'fr-FR'
+            ? 'Français 🇫🇷'
+            : targetLang === 'en-US'
+            ? 'Anglais 🇺🇸'
+            : 'Arabe 🇹🇳'
+        } !`
+      );
+    }
+  };
+
+  // Process a finalized voice transcript -> transform voice to text in search bar
+  const finalizeVoiceSearch = async (spokenText: string, closeModal = true) => {
     const cleaned = spokenText.trim();
     if (!cleaned) return;
 
     stopMicrophoneResources();
 
-    // Check spoken query against AI Moderation Shield
     const modResult = await moderateContentWithAI({
       text: cleaned,
       source: 'voice_search',
@@ -249,182 +357,289 @@ export const Header: React.FC<HeaderProps> = ({
       return;
     }
 
+    // Put the transcribed/translated text directly into the search input and execute search
     setSearchQuery(cleaned);
     onSearch(cleaned);
     setRecentSearches(addSearchHistoryItem(currentUser?.id, cleaned));
-    if (currentUser) {
-      logUserActivity(currentUser.id, {
-        action: 'voice_search',
-        searchQuery: cleaned,
-      });
-    }
-    setTimeout(() => {
+    logUserActivity(currentUser?.id, {
+      action: 'voice_search',
+      searchQuery: cleaned,
+    });
+
+    if (closeModal) {
       setIsVoiceModalOpen(false);
       setIsMobileSearchActive(false);
       setIsSearchFocused(false);
-    }, 350);
+    }
   };
 
-  // Start real microphone voice capture + audio visualizer + SpeechRecognition / Gemini fallback
-  const startVoiceRecognition = async () => {
+  // Stop active recording and immediately trigger transcription + translation
+  const stopAndTranscribeNow = () => {
+    if (recognitionRef.current) {
+      try {
+        recognitionRef.current.stop();
+      } catch {}
+    }
+    if (
+      mediaRecorderRef.current &&
+      mediaRecorderRef.current.state === 'recording'
+    ) {
+      try {
+        mediaRecorderRef.current.stop();
+        return;
+      } catch {}
+    }
     stopMicrophoneResources();
-    setIsVoiceModalOpen(true);
-    setVoiceTranscript('');
-    setVoiceError(null);
-    setVoiceStatusText('Écoute en cours... Parlez dans votre micro');
-    setIsListening(true);
+    if (voiceTranscript.trim()) {
+      handleTranslateTranscript(voiceTranscript, voiceLang);
+    } else {
+      setVoiceStatusText('Micro arrêté. Cliquez sur le micro pour parler.');
+    }
+  };
 
-    // 1. Start real microphone audio stream for waveform visualization + MediaRecorder backup
+  // Start MediaRecorder + Web Audio AnalyserNode with automatic silence detection & Gemini AI Transcription/Translation
+  const startGeminiAudioRecorder = async (
+    targetLang: VoiceLangCode = voiceLang,
+    silentParallel = false
+  ) => {
+    if (!silentParallel) {
+      stopMicrophoneResources();
+      setVoiceError(null);
+      setVoiceStatusText(
+        'Écoute vocale active... Parlez (toutes langues) : transcription & traduction automatiques !'
+      );
+      setIsListening(true);
+    }
+
     try {
-      if (navigator.mediaDevices && navigator.mediaDevices.getUserMedia) {
-        const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
-        mediaStreamRef.current = stream;
+      const stream = await navigator.mediaDevices.getUserMedia({
+        audio: {
+          echoCancellation: true,
+          noiseSuppression: true,
+          autoGainControl: true,
+        },
+      });
+      mediaStreamRef.current = stream;
+      audioChunksRef.current = [];
 
-        const AudioCtx = window.AudioContext || (window as unknown as { webkitAudioContext: typeof AudioContext }).webkitAudioContext;
+      // Setup real-time Web Audio AnalyserNode for live voice waveform & silence detection
+      try {
+        const AudioCtx =
+          window.AudioContext || (window as unknown as { webkitAudioContext: typeof AudioContext }).webkitAudioContext;
         if (AudioCtx) {
           const audioCtx = new AudioCtx();
           audioContextRef.current = audioCtx;
-          const source = audioCtx.createMediaStreamSource(stream);
+          const sourceNode = audioCtx.createMediaStreamSource(stream);
           const analyser = audioCtx.createAnalyser();
-          analyser.fftSize = 32;
-          source.connect(analyser);
+          analyser.fftSize = 64;
+          sourceNode.connect(analyser);
 
-          const bufferLength = analyser.frequencyBinCount;
-          const dataArray = new Uint8Array(bufferLength);
+          const dataArray = new Uint8Array(analyser.frequencyBinCount);
+          let hasDetectedVoice = false;
+          let silentFramesCount = 0;
 
-          const updateWaveform = () => {
+          if (pulseIntervalRef.current) {
+            window.clearInterval(pulseIntervalRef.current);
+          }
+
+          pulseIntervalRef.current = window.setInterval(() => {
             analyser.getByteFrequencyData(dataArray);
-            const bars = Array.from({ length: 7 }, (_, i) => {
-              const val = dataArray[i % bufferLength] || 15;
-              return Math.max(15, Math.min(100, Math.round((val / 255) * 100)));
-            });
+            const bars = [
+              Math.min(100, Math.max(18, Math.round((dataArray[1] / 255) * 100))),
+              Math.min(100, Math.max(18, Math.round((dataArray[2] / 255) * 100))),
+              Math.min(100, Math.max(18, Math.round((dataArray[3] / 255) * 100))),
+              Math.min(100, Math.max(18, Math.round((dataArray[4] / 255) * 100))),
+              Math.min(100, Math.max(18, Math.round((dataArray[5] / 255) * 100))),
+              Math.min(100, Math.max(18, Math.round((dataArray[6] / 255) * 100))),
+              Math.min(100, Math.max(18, Math.round((dataArray[7] / 255) * 100))),
+            ];
             setAudioLevels(bars);
-            animFrameRef.current = requestAnimationFrame(updateWaveform);
-          };
-          updateWaveform();
-        }
-      }
-    } catch {
-      // Even if getUserMedia visualizer is blocked by iframe permissions, SpeechRecognition may still work
-    }
 
-    // 2. Start Web Speech API (SpeechRecognition / webkitSpeechRecognition)
+            const avgVolume =
+              bars.reduce((acc, val) => acc + val, 0) / bars.length;
+
+            if (avgVolume > 32) {
+              hasDetectedVoice = true;
+              silentFramesCount = 0;
+            } else if (hasDetectedVoice) {
+              silentFramesCount += 1;
+              // ~1.5 seconds of silence after user spoke -> automatically stop and transcribe!
+              if (silentFramesCount >= 12) {
+                if (
+                  mediaRecorderRef.current &&
+                  mediaRecorderRef.current.state === 'recording'
+                ) {
+                  try {
+                    mediaRecorderRef.current.stop();
+                  } catch {}
+                }
+              }
+            }
+          }, 125);
+        }
+      } catch {
+        // Fallback waveform animation if AudioContext fails
+        pulseIntervalRef.current = window.setInterval(() => {
+          setAudioLevels(
+            Array.from({ length: 7 }, () => Math.floor(25 + Math.random() * 75))
+          );
+        }, 140);
+      }
+
+      const mimeType = MediaRecorder.isTypeSupported('audio/webm;codecs=opus')
+        ? 'audio/webm;codecs=opus'
+        : MediaRecorder.isTypeSupported('audio/mp4')
+        ? 'audio/mp4'
+        : 'audio/webm';
+
+      const recorder = new MediaRecorder(stream);
+      mediaRecorderRef.current = recorder;
+
+      recorder.ondataavailable = (e) => {
+        if (e.data && e.data.size > 0) {
+          audioChunksRef.current.push(e.data);
+        }
+      };
+
+      recorder.onstop = async () => {
+        const recordedChunks = [...audioChunksRef.current];
+        stopMicrophoneResources(true);
+
+        // If Web Speech API already produced a transcript, translate it if autoTranslate is enabled
+        if (speechProducedResultRef.current && voiceTranscript.trim()) {
+          if (autoTranslateVoice) {
+            await handleTranslateTranscript(voiceTranscript, targetLang);
+          }
+          return;
+        }
+
+        if (recordedChunks.length === 0) {
+          setVoiceStatusText('Aucun son enregistré. Cliquez sur le micro pour réessayer.');
+          return;
+        }
+
+        setIsTranscribingAI(true);
+        setVoiceStatusText('Transcription & traduction de votre voix en texte...');
+
+        const audioBlob = new Blob(recordedChunks, { type: mimeType });
+        const result = await transcribeAudioBlob({
+          audioBlob,
+          mimeType,
+          lang: targetLang,
+          translateToTarget: autoTranslateVoice,
+        });
+
+        setIsTranscribingAI(false);
+
+        if (result.transcript) {
+          setOriginalVoiceText(result.originalTranscript || result.transcript);
+          setVoiceTranscript(result.transcript);
+          setSearchQuery(result.transcript);
+          onSearch(result.transcript);
+          setRecentSearches(addSearchHistoryItem(currentUser?.id, result.transcript));
+          setVoiceStatusText('Voix transcrite et traduite en texte avec succès !');
+          return;
+        }
+
+        if (result.error) {
+          setVoiceError(result.error);
+        }
+      };
+
+      recorder.start(200);
+
+      // Auto-stop after 5.5 seconds max if user keeps talking or background noise continues
+      autoSubmitTimeoutRef.current = window.setTimeout(() => {
+        if (recorder.state === 'recording') {
+          try {
+            recorder.stop();
+          } catch {}
+        }
+      }, 5500);
+    } catch {
+      if (!silentParallel) {
+        setIsListening(false);
+        setVoiceError(
+          'L’accès au microphone a été bloqué par le navigateur. Autorisez le microphone dans la barre d’adresse.'
+        );
+      }
+    }
+  };
+
+  // Start Hybrid Voice Recognition + AI Voice Transcription/Translation
+  const startVoiceRecognition = (langOverride?: VoiceLangCode) => {
+    const activeLang = langOverride || voiceLang;
+    stopMicrophoneResources();
+    speechProducedResultRef.current = false;
+    setIsVoiceModalOpen(true);
+    setVoiceError(null);
+    setIsTranscribingAI(false);
+    setVoiceStatusText(
+      'Parlez maintenant : votre voix est transcrite et traduite en direct...'
+    );
+    setIsListening(true);
+
+    // Always start the real microphone MediaRecorder + silence detector so even in iframes or unsupported browsers, audio is captured & transcribed/translated!
+    startGeminiAudioRecorder(activeLang, true);
+
     const SpeechRecognitionConstructor =
-      (window as unknown as { SpeechRecognition?: new () => SpeechRecognitionInstance }).SpeechRecognition ||
-      (window as unknown as { webkitSpeechRecognition?: new () => SpeechRecognitionInstance }).webkitSpeechRecognition;
+      (window as unknown as { SpeechRecognition?: new () => SpeechRecognitionInstance })
+        .SpeechRecognition ||
+      (window as unknown as { webkitSpeechRecognition?: new () => SpeechRecognitionInstance })
+        .webkitSpeechRecognition;
 
     if (SpeechRecognitionConstructor) {
       try {
         const recognition = new SpeechRecognitionConstructor();
         recognitionRef.current = recognition;
-        recognition.lang = 'fr-FR';
-        recognition.continuous = false;
+        recognition.lang = activeLang;
+        recognition.continuous = true;
         recognition.interimResults = true;
 
-        let latestTranscript = '';
+        let accumulatedFinal = '';
 
         recognition.onresult = (event: SpeechRecognitionEvent) => {
-          let interim = '';
-          let finalStr = '';
-
-          for (let i = 0; i < event.results.length; i++) {
+          let interimTranscript = '';
+          for (let i = event.resultIndex || 0; i < event.results.length; i++) {
             const res = event.results[i];
             if (res.isFinal) {
-              finalStr += res[0].transcript;
+              accumulatedFinal += res[0].transcript + ' ';
             } else {
-              interim += res[0].transcript;
+              interimTranscript += res[0].transcript;
             }
           }
 
-          latestTranscript = (finalStr || interim).trim();
-          setVoiceTranscript(latestTranscript);
+          const combinedText = (accumulatedFinal + interimTranscript).trim();
+          if (combinedText) {
+            speechProducedResultRef.current = true;
+            setOriginalVoiceText(combinedText);
+            setVoiceTranscript(combinedText);
+            setSearchQuery(combinedText);
+            onSearch(combinedText);
+            setVoiceStatusText('Voix détectée et transcrite en direct !');
 
-          if (finalStr.trim()) {
-            setVoiceStatusText('Recherche vocale reconnue !');
-            finalizeVoiceSearch(finalStr.trim());
+            // If a final segment was produced and autoTranslate is active, translate it
+            if (accumulatedFinal.trim() && autoTranslateVoice) {
+              translateVoiceText(combinedText, activeLang).then((translated) => {
+                if (translated && translated !== combinedText) {
+                  setVoiceTranscript(translated);
+                  setSearchQuery(translated);
+                  onSearch(translated);
+                }
+              });
+            }
           }
         };
 
-        recognition.onerror = (event: { error: string }) => {
-          if (event.error === 'not-allowed' || event.error === 'service-not-allowed') {
-            setVoiceError(
-              'L’accès au microphone a été refusé par le navigateur. Autorisez le micro dans la barre d’adresse ou cliquez sur une commande vocale ci-dessous.'
-            );
-          } else if (event.error === 'no-speech') {
-            setVoiceStatusText('Aucun son détecté. Cliquez sur le micro pour réessayer.');
-          } else {
-            setVoiceStatusText('Micro en attente. Réessayez ou choisissez une suggestion vocale.');
-          }
-          setIsListening(false);
-        };
-
-        recognition.onend = () => {
-          setIsListening(false);
-          if (latestTranscript.trim()) {
-            finalizeVoiceSearch(latestTranscript);
-          }
+        recognition.onerror = () => {
+          // MediaRecorder is already running in parallel and will transcribe via Gemini on stop!
         };
 
         recognition.start();
-        return;
       } catch {
-        // Fallback to MediaRecorder + Gemini /api/ai/transcribe
+        // MediaRecorder is already running in parallel and will handle transcription
       }
     }
-
-    // 3. Fallback: Record 3.5 seconds via MediaRecorder and send to /api/ai/transcribe (Gemini 3.5 Transcribe)
-    if (mediaStreamRef.current && typeof MediaRecorder !== 'undefined') {
-      try {
-        audioChunksRef.current = [];
-        const recorder = new MediaRecorder(mediaStreamRef.current);
-        mediaRecorderRef.current = recorder;
-
-        recorder.ondataavailable = (e) => {
-          if (e.data.size > 0) audioChunksRef.current.push(e.data);
-        };
-
-        recorder.onstop = async () => {
-          setVoiceStatusText('Transcription IA en cours...');
-          const audioBlob = new Blob(audioChunksRef.current, { type: 'audio/webm' });
-          const reader = new FileReader();
-          reader.onloadend = async () => {
-            const base64Audio = reader.result as string;
-            try {
-              const resp = await fetch('/api/ai/transcribe', {
-                method: 'POST',
-                headers: { 'Content-Type': 'application/json' },
-                body: JSON.stringify({ audioBase64: base64Audio, mimeType: 'audio/webm' }),
-              });
-              if (resp.ok) {
-                const data = await resp.json();
-                if (data.transcript) {
-                  setVoiceTranscript(data.transcript);
-                  finalizeVoiceSearch(data.transcript);
-                  return;
-                }
-              }
-            } catch {}
-            setVoiceError(
-              'Reconnaissance vocale terminée. Vous pouvez aussi sélectionner une commande vocale rapide ci-dessous.'
-            );
-          };
-          reader.readAsDataURL(audioBlob);
-        };
-
-        recorder.start();
-        setTimeout(() => {
-          if (recorder.state === 'recording') {
-            recorder.stop();
-          }
-        }, 3800);
-        return;
-      } catch {}
-    }
-
-    setIsListening(false);
-    setVoiceError(
-      'Votre navigateur restreint le micro en aperçu intégré. Utilisez une commande vocale rapide ci-dessous ou autorisez le microphone.'
-    );
   };
 
   const handleSelectSuggestion = async (query: string) => {
@@ -446,6 +661,7 @@ export const Header: React.FC<HeaderProps> = ({
 
   const handleClearSearch = () => {
     setSearchQuery('');
+    setVoiceTranscript('');
     onSearch('');
     if (isMobileSearchActive) {
       mobileInputRef.current?.focus();
@@ -473,6 +689,10 @@ export const Header: React.FC<HeaderProps> = ({
 
     onSearch(searchQuery);
     setRecentSearches(addSearchHistoryItem(currentUser?.id, searchQuery));
+    logUserActivity(currentUser?.id, {
+      action: 'search',
+      searchQuery: searchQuery.trim(),
+    });
     setIsSearchFocused(false);
     setIsMobileSearchActive(false);
   };
@@ -531,11 +751,11 @@ export const Header: React.FC<HeaderProps> = ({
       )}
 
       {/* =========================================================================
-          0B. REAL MICROPHONE VOICE SEARCH MODAL (DESKTOP & MOBILE)
+          0B. REAL VOICE-TO-TEXT & VOICE TRANSLATION MICROPHONE MODAL
          ========================================================================= */}
       {isVoiceModalOpen && (
         <div className="fixed inset-0 z-[65] bg-black/85 backdrop-blur-md flex items-center justify-center p-4 animate-in fade-in duration-150">
-          <div className="w-full max-w-md bg-[#181818] border border-white/15 rounded-3xl p-6 shadow-2xl text-white relative">
+          <div className="w-full max-w-lg bg-[#181818] border border-white/15 rounded-3xl p-6 shadow-2xl text-white relative">
             <button
               type="button"
               onClick={() => {
@@ -547,24 +767,82 @@ export const Header: React.FC<HeaderProps> = ({
               <X className="w-5 h-5" />
             </button>
 
-            <div className="text-center space-y-4 pt-2">
-              <div className="inline-flex items-center gap-1.5 text-xs text-emerald-400 font-semibold">
-                <ShieldCheck className="w-4 h-4" />
-                <span>Reconnaissance Vocale & Protection IA Actives</span>
+            <div className="space-y-4">
+              <div className="flex flex-wrap items-center justify-between gap-2 pr-10">
+                <div className="inline-flex items-center gap-1.5 text-xs text-emerald-400 font-bold">
+                  <Mic className="w-4 h-4 text-[#ff0000]" />
+                  <span>Microphone Voix → Texte & Traduction Vocale</span>
+                </div>
+
+                {/* Language Selector for Speech-to-Text & Voice Translation */}
+                <div className="flex items-center gap-1 bg-black/40 p-1 rounded-xl border border-white/10">
+                  {(
+                    [
+                      { code: 'fr-FR', label: '🇫🇷 FR' },
+                      { code: 'en-US', label: '🇺🇸 EN' },
+                      { code: 'ar-SA', label: '🇹🇳 AR' },
+                    ] as const
+                  ).map((l) => (
+                    <button
+                      key={l.code}
+                      type="button"
+                      onClick={() => {
+                        setVoiceLang(l.code);
+                        if (voiceTranscript.trim() && !isListening) {
+                          handleTranslateTranscript(
+                            originalVoiceText || voiceTranscript,
+                            l.code
+                          );
+                        } else {
+                          startVoiceRecognition(l.code);
+                        }
+                      }}
+                      className={`px-2.5 py-1 rounded-lg text-[11px] font-bold cursor-pointer transition-colors ${
+                        voiceLang === l.code
+                          ? 'bg-[#ff0000] text-white'
+                          : 'text-gray-400 hover:text-white'
+                      }`}
+                    >
+                      {l.label}
+                    </button>
+                  ))}
+                </div>
               </div>
 
-              <h3 className="text-lg font-bold text-white">
-                {voiceTranscript ? `"${voiceTranscript}"` : voiceStatusText}
-              </h3>
+              {/* Auto-Translate Toggle Banner */}
+              <div className="flex items-center justify-between px-3 py-2 rounded-xl bg-white/5 border border-white/10 text-xs">
+                <span className="text-gray-300">
+                  Traduire automatiquement la voix vers{' '}
+                  <strong className="text-white">
+                    {voiceLang === 'fr-FR'
+                      ? 'Français 🇫🇷'
+                      : voiceLang === 'en-US'
+                      ? 'English 🇺🇸'
+                      : 'العربية 🇹🇳'}
+                  </strong>
+                </span>
+                <button
+                  type="button"
+                  onClick={() => setAutoTranslateVoice(!autoTranslateVoice)}
+                  className={`px-2.5 py-1 rounded-lg text-[11px] font-bold cursor-pointer transition-colors ${
+                    autoTranslateVoice
+                      ? 'bg-emerald-500/20 text-emerald-400 border border-emerald-500/40'
+                      : 'bg-white/10 text-gray-400'
+                  }`}
+                >
+                  {autoTranslateVoice ? 'Traduction Auto : OUI' : 'Traduction Auto : NON'}
+                </button>
+              </div>
 
-              {/* Animated Microphone Pulse & Waveform */}
-              <div className="py-6 flex flex-col items-center justify-center gap-5">
+              <p className="text-xs text-gray-300">{voiceStatusText}</p>
+
+              {/* Animated Microphone Button & Waveform */}
+              <div className="py-3 flex flex-col items-center justify-center gap-3">
                 <button
                   type="button"
                   onClick={() => {
                     if (isListening) {
-                      stopMicrophoneResources();
-                      setVoiceStatusText('Micro en pause. Cliquez pour parler.');
+                      stopAndTranscribeNow();
                     } else {
                       startVoiceRecognition();
                     }
@@ -574,6 +852,11 @@ export const Header: React.FC<HeaderProps> = ({
                       ? 'bg-[#ff0000] text-white shadow-[0_0_35px_rgba(255,0,0,0.65)] scale-105'
                       : 'bg-[#2a2a2a] hover:bg-[#383838] text-gray-300'
                   }`}
+                  title={
+                    isListening
+                      ? 'Cliquez pour arrêter et transcrire/traduire maintenant'
+                      : 'Cliquez pour parler'
+                  }
                 >
                   {isListening && (
                     <span className="absolute inset-0 rounded-full bg-[#ff0000] animate-ping opacity-30" />
@@ -586,7 +869,7 @@ export const Header: React.FC<HeaderProps> = ({
                 </button>
 
                 {/* Live Audio Waveform Bars */}
-                <div className="flex items-center justify-center gap-1.5 h-10">
+                <div className="flex items-center justify-center gap-1.5 h-8">
                   {audioLevels.map((lvl, index) => (
                     <div
                       key={index}
@@ -594,11 +877,96 @@ export const Header: React.FC<HeaderProps> = ({
                         isListening ? 'bg-[#ff0000]' : 'bg-white/20'
                       }`}
                       style={{
-                        height: isListening ? `${Math.max(18, lvl)}%` : '20%',
+                        height: isListening ? `${Math.max(20, lvl)}%` : '20%',
                       }}
                     />
                   ))}
                 </div>
+              </div>
+
+              {/* REAL-TIME TRANSCRIBED & TRANSLATED TEXT BOX (VOICE -> TEXT) */}
+              <div className="space-y-2">
+                <div className="flex items-center justify-between text-xs">
+                  <span className="font-bold text-gray-300">
+                    Texte transcrit / traduit depuis votre voix :
+                  </span>
+                  {voiceTranscript && (
+                    <button
+                      type="button"
+                      onClick={() => {
+                        setVoiceTranscript('');
+                        setOriginalVoiceText('');
+                        setSearchQuery('');
+                        onSearch('');
+                      }}
+                      className="text-red-400 hover:underline text-[11px] font-semibold cursor-pointer"
+                    >
+                      Effacer le texte
+                    </button>
+                  )}
+                </div>
+
+                {originalVoiceText &&
+                  originalVoiceText.toLowerCase() !== voiceTranscript.toLowerCase() && (
+                    <div className="px-3 py-1.5 rounded-xl bg-white/5 border border-white/10 text-[11px] text-gray-400 flex items-center justify-between">
+                      <span>Paroles originales détectées : « {originalVoiceText} »</span>
+                    </div>
+                  )}
+
+                <textarea
+                  rows={2}
+                  value={voiceTranscript}
+                  onChange={(e) => {
+                    setVoiceTranscript(e.target.value);
+                    setSearchQuery(e.target.value);
+                    onSearch(e.target.value);
+                  }}
+                  placeholder={
+                    isTranscribingAI
+                      ? 'Transcription et traduction IA en cours...'
+                      : 'Parlez dans votre micro : vos paroles sont transcrites et traduites ici automatiquement...'
+                  }
+                  className="w-full p-3.5 rounded-2xl bg-[#111111] border border-white/15 focus:border-[#ff0000] text-sm font-medium text-white placeholder-gray-500 outline-none resize-none"
+                />
+
+                {/* 1-Click Instant Translation Bar for any transcribed or typed text */}
+                {voiceTranscript.trim() && (
+                  <div className="flex flex-wrap items-center gap-1.5 pt-1">
+                    <span className="text-[11px] text-gray-400 mr-1">
+                      Traduire ce texte en :
+                    </span>
+                    <button
+                      type="button"
+                      onClick={() => {
+                        setVoiceLang('fr-FR');
+                        handleTranslateTranscript(voiceTranscript, 'fr-FR');
+                      }}
+                      className="px-2.5 py-1 rounded-lg bg-white/10 hover:bg-white/20 text-[11px] font-bold text-white cursor-pointer"
+                    >
+                      🇫🇷 Français
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => {
+                        setVoiceLang('en-US');
+                        handleTranslateTranscript(voiceTranscript, 'en-US');
+                      }}
+                      className="px-2.5 py-1 rounded-lg bg-white/10 hover:bg-white/20 text-[11px] font-bold text-white cursor-pointer"
+                    >
+                      🇺🇸 English
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => {
+                        setVoiceLang('ar-SA');
+                        handleTranslateTranscript(voiceTranscript, 'ar-SA');
+                      }}
+                      className="px-2.5 py-1 rounded-lg bg-white/10 hover:bg-white/20 text-[11px] font-bold text-white cursor-pointer"
+                    >
+                      🇹🇳 العربية
+                    </button>
+                  </div>
+                )}
               </div>
 
               {voiceError && (
@@ -607,34 +975,38 @@ export const Header: React.FC<HeaderProps> = ({
                 </div>
               )}
 
-              {/* Quick Voice Commands (For instant testing or when browser blocks mic in iframe) */}
-              <div className="pt-3 border-t border-white/10 text-left">
-                <div className="flex items-center gap-1.5 text-xs text-gray-400 mb-2.5">
-                  <Volume2 className="w-3.5 h-3.5 text-[#ff0000]" />
-                  <span>Commandes vocales instantanées (cliquez pour tester) :</span>
-                </div>
-                <div className="flex flex-wrap gap-1.5">
-                  {[
-                    'Sintel 4K',
-                    'Animation 3D',
-                    'Exploration Océanique',
-                    'React & Vite',
-                    'Lo-Fi Chill Beats',
-                    'Gaming Speedrun',
-                  ].map((sample) => (
-                    <button
-                      key={sample}
-                      type="button"
-                      onClick={() => {
-                        setVoiceTranscript(sample);
-                        finalizeVoiceSearch(sample);
-                      }}
-                      className="px-3 py-1.5 rounded-xl bg-white/10 hover:bg-[#ff0000] text-xs font-medium text-white transition-colors cursor-pointer"
-                    >
-                      🎤 « {sample} »
-                    </button>
-                  ))}
-                </div>
+              {/* Action buttons: Stop/Transcribe AI or Validate Search */}
+              <div className="flex flex-wrap items-center justify-between gap-2 pt-2">
+                <button
+                  type="button"
+                  onClick={() => {
+                    if (isListening) {
+                      stopAndTranscribeNow();
+                    } else {
+                      startVoiceRecognition();
+                    }
+                  }}
+                  className="px-3.5 py-2.5 rounded-xl bg-white/10 hover:bg-white/15 text-xs font-bold text-gray-200 flex items-center gap-1.5 cursor-pointer"
+                >
+                  <Sparkles className="w-3.5 h-3.5 text-[#ff0000]" />
+                  <span>
+                    {isListening
+                      ? 'Arrêter & Traduire maintenant'
+                      : isTranscribingAI
+                      ? 'Traduction en cours...'
+                      : 'Relancer l’écoute vocale'}
+                  </span>
+                </button>
+
+                <button
+                  type="button"
+                  disabled={!voiceTranscript.trim()}
+                  onClick={() => finalizeVoiceSearch(voiceTranscript, true)}
+                  className="flex-1 sm:flex-initial px-5 py-2.5 rounded-xl bg-[#ff0000] hover:bg-red-700 disabled:opacity-40 text-xs font-black text-white flex items-center justify-center gap-1.5 cursor-pointer shadow-lg"
+                >
+                  <Check className="w-4 h-4" />
+                  <span>Rechercher ce texte</span>
+                </button>
               </div>
             </div>
           </div>
@@ -662,7 +1034,7 @@ export const Header: React.FC<HeaderProps> = ({
                   type="text"
                   value={searchQuery}
                   onChange={(e) => setSearchQuery(e.target.value)}
-                  placeholder="Rechercher sur MK..."
+                  placeholder="Rechercher ou dicter au micro..."
                   className="w-full bg-transparent text-white placeholder-zinc-400 text-base outline-none pr-8 caret-[#ff0000]"
                   autoComplete="off"
                 />
@@ -682,9 +1054,9 @@ export const Header: React.FC<HeaderProps> = ({
             {/* Real Working Microphone Button on Mobile */}
             <button
               type="button"
-              onClick={startVoiceRecognition}
-              className="w-10 h-10 rounded-full bg-[#222222] hover:bg-[#ff0000] flex items-center justify-center text-white transition-colors shrink-0 cursor-pointer"
-              title="Recherche vocale par microphone"
+              onClick={() => startVoiceRecognition()}
+              className="w-10 h-10 rounded-full bg-[#ff0000] hover:bg-red-700 flex items-center justify-center text-white transition-colors shrink-0 cursor-pointer shadow-md"
+              title="Dicter votre recherche (Voix vers Texte)"
             >
               <Mic className="w-5 h-5" />
             </button>
@@ -694,7 +1066,7 @@ export const Header: React.FC<HeaderProps> = ({
             {recentSearches.length > 0 && (
               <div className="px-4 py-2.5 bg-[#161616] flex items-center justify-between text-xs text-zinc-400">
                 <span className="font-bold uppercase tracking-wider text-[11px]">
-                  Historique de recherche ({recentSearches.length})
+                  Historique de recherche réel ({recentSearches.length})
                 </span>
                 <button
                   type="button"
@@ -709,7 +1081,7 @@ export const Header: React.FC<HeaderProps> = ({
 
             {recentSearches.length === 0 && (
               <div className="p-10 text-center text-zinc-500 text-xs">
-                Aucune recherche récente enregistrée.
+                Aucune recherche récente enregistrée. Tapez ou utilisez le microphone pour rechercher.
               </div>
             )}
 
@@ -808,7 +1180,7 @@ export const Header: React.FC<HeaderProps> = ({
             </button>
           </div>
 
-          {/* CENTER: DESKTOP SEARCH BAR + REAL WORKING MICROPHONE BUTTON */}
+          {/* CENTER: DESKTOP SEARCH BAR + REAL WORKING VOICE-TO-TEXT MICROPHONE BUTTON */}
           <div className="hidden md:flex relative flex-1 max-w-xl lg:max-w-2xl mx-4">
             <form onSubmit={handleSearchSubmit} className="relative flex items-center w-full">
               <div className="relative flex-1 flex items-center min-w-0">
@@ -823,7 +1195,7 @@ export const Header: React.FC<HeaderProps> = ({
                   onChange={(e) => setSearchQuery(e.target.value)}
                   onFocus={() => setIsSearchFocused(true)}
                   onBlur={() => setTimeout(() => setIsSearchFocused(false), 180)}
-                  placeholder="Rechercher sur MK..."
+                  placeholder="Rechercher ou cliquer sur le micro pour dicter..."
                   className="w-full h-10 bg-[#121212] hover:bg-[#181818] focus:bg-[#121212] text-white placeholder-zinc-400 text-sm rounded-l-full pl-10 pr-9 border border-[#333333] focus:border-[#ff0000] focus:ring-1 focus:ring-[#ff0000] outline-none transition-all caret-[#ff0000]"
                   autoComplete="off"
                 />
@@ -848,12 +1220,16 @@ export const Header: React.FC<HeaderProps> = ({
                 <Search className="w-4 h-4" />
               </button>
 
-              {/* REAL WORKING MICROPHONE BUTTON ON DESKTOP */}
+              {/* REAL WORKING VOICE-TO-TEXT MICROPHONE BUTTON ON DESKTOP */}
               <button
                 type="button"
-                onClick={startVoiceRecognition}
-                title="Recherche vocale par microphone"
-                className="ml-2.5 h-10 w-10 rounded-full bg-[#222222] hover:bg-[#ff0000] text-white border border-[#333333] hover:border-[#ff0000] transition-all flex items-center justify-center shrink-0 cursor-pointer"
+                onClick={() => startVoiceRecognition()}
+                title="Transformer la voix en texte (Microphone)"
+                className={`ml-2.5 h-10 w-10 rounded-full border transition-all flex items-center justify-center shrink-0 cursor-pointer ${
+                  isListening
+                    ? 'bg-[#ff0000] text-white border-[#ff0000] animate-pulse'
+                    : 'bg-[#222222] hover:bg-[#ff0000] text-white border-[#333333] hover:border-[#ff0000]'
+                }`}
               >
                 <Mic className="w-4 h-4" />
               </button>
@@ -952,26 +1328,176 @@ export const Header: React.FC<HeaderProps> = ({
 
             {/* MOBILE ONLY: DIRECT MICROPHONE BUTTON */}
             <button
-              onClick={startVoiceRecognition}
-              className="md:hidden w-9 h-9 rounded-full flex items-center justify-center text-white bg-white/5 hover:bg-[#ff0000] active:scale-95 transition-colors cursor-pointer"
-              title="Recherche vocale"
+              onClick={() => startVoiceRecognition()}
+              className="md:hidden w-9 h-9 rounded-full flex items-center justify-center text-white bg-white/10 hover:bg-[#ff0000] active:scale-95 transition-colors cursor-pointer"
+              title="Microphone : transformer la voix en texte"
             >
               <Mic className="w-4 h-4" />
             </button>
 
-            {/* NOTIFICATION BELL ICON */}
-            <button
-              onClick={() => {
-                if (!currentUser) {
-                  onOpenAuth('login');
-                }
-              }}
-              className="w-9 h-9 sm:w-10 sm:h-10 rounded-full flex items-center justify-center text-white hover:bg-white/10 active:scale-95 transition-colors cursor-pointer relative"
-              title="Notifications"
-            >
-              <Bell className="w-5 h-5 text-white" />
-              <span className="absolute top-2 right-2 w-2 h-2 rounded-full bg-[#ff0000]" />
-            </button>
+            {/* =================================================================
+                REAL WORKING NOTIFICATIONS BELL & DROPDOWN PANEL
+               ================================================================= */}
+            <div className="relative" ref={notifRef}>
+              <button
+                type="button"
+                onClick={() => setIsNotifOpen((prev) => !prev)}
+                className={`w-9 h-9 sm:w-10 sm:h-10 rounded-full flex items-center justify-center transition-colors cursor-pointer relative ${
+                  isNotifOpen
+                    ? 'bg-[#ff0000] text-white'
+                    : 'text-white hover:bg-white/10 active:scale-95'
+                }`}
+                title="Centre de Notifications"
+              >
+                <Bell className="w-5 h-5" />
+                {unreadNotifCount > 0 && (
+                  <span className="absolute top-1 right-1 min-w-[18px] h-[18px] px-1 rounded-full bg-[#ff0000] border-2 border-[#0f0f0f] text-white text-[10px] font-black flex items-center justify-center">
+                    {unreadNotifCount > 9 ? '9+' : unreadNotifCount}
+                  </span>
+                )}
+              </button>
+
+              {isNotifOpen && (
+                <div className="fixed sm:absolute right-2 sm:right-0 top-14 sm:top-full mt-1 sm:mt-2 w-[calc(100vw-16px)] sm:w-96 bg-[#1b1b1b] border border-[#383838] rounded-3xl shadow-2xl z-50 text-white overflow-hidden animate-in fade-in zoom-in-95 duration-150">
+                  {/* Notifications Header */}
+                  <div className="px-4 py-3.5 bg-[#222222] border-b border-white/10 flex items-center justify-between gap-2">
+                    <div className="flex items-center gap-2">
+                      <BellRing className="w-4 h-4 text-[#ff0000]" />
+                      <span className="text-xs sm:text-sm font-black">
+                        Notifications ({notifications.length})
+                      </span>
+                      {unreadNotifCount > 0 && (
+                        <span className="px-2 py-0.5 rounded-full bg-[#ff0000]/20 text-[#ff4444] text-[10px] font-bold">
+                          {unreadNotifCount} non lue{unreadNotifCount > 1 ? 's' : ''}
+                        </span>
+                      )}
+                    </div>
+
+                    <div className="flex items-center gap-2">
+                      {unreadNotifCount > 0 && (
+                        <button
+                          type="button"
+                          onClick={() =>
+                            setNotifications(markAllNotificationsAsRead(currentUser?.id))
+                          }
+                          className="text-[11px] text-emerald-400 hover:underline font-bold flex items-center gap-1 cursor-pointer"
+                          title="Tout marquer comme lu"
+                        >
+                          <CheckCheck className="w-3.5 h-3.5" />
+                          <span>Tout lire</span>
+                        </button>
+                      )}
+                      {notifications.length > 0 && (
+                        <button
+                          type="button"
+                          onClick={() =>
+                            setNotifications(clearAllNotifications(currentUser?.id))
+                          }
+                          className="text-[11px] text-red-400 hover:underline font-bold flex items-center gap-1 cursor-pointer"
+                          title="Vider toutes les notifications"
+                        >
+                          <Trash2 className="w-3.5 h-3.5" />
+                          <span>Vider</span>
+                        </button>
+                      )}
+                    </div>
+                  </div>
+
+                  {/* Browser Push Permission Banner */}
+                  {browserPushStatus === 'default' && (
+                    <div className="px-4 py-2.5 bg-blue-500/10 border-b border-blue-500/20 flex items-center justify-between gap-2">
+                      <span className="text-[11px] text-blue-200">
+                        Activer les notifications système du navigateur ?
+                      </span>
+                      <button
+                        type="button"
+                        onClick={handleRequestBrowserPush}
+                        className="px-2.5 py-1 rounded-lg bg-blue-500 hover:bg-blue-600 text-white text-[11px] font-bold shrink-0 cursor-pointer"
+                      >
+                        Activer
+                      </button>
+                    </div>
+                  )}
+
+                  {/* Notifications List */}
+                  <div className="max-h-80 overflow-y-auto divide-y divide-white/10">
+                    {notifications.length === 0 ? (
+                      <div className="p-8 text-center space-y-2">
+                        <Bell className="w-8 h-8 text-zinc-600 mx-auto" />
+                        <p className="text-xs font-bold text-white">
+                          Aucune notification pour le moment
+                        </p>
+                        <p className="text-[11px] text-zinc-400">
+                          Vos alertes d'abonnements, de publications 4K et de sécurité s'afficheront ici en direct.
+                        </p>
+                      </div>
+                    ) : (
+                      notifications.map((notif) => (
+                        <div
+                          key={notif.id}
+                          onClick={() => {
+                            setNotifications(
+                              markNotificationAsRead(notif.id, currentUser?.id)
+                            );
+                            if (notif.videoId && onSelectVideoById) {
+                              setIsNotifOpen(false);
+                              onSelectVideoById(notif.videoId);
+                            }
+                          }}
+                          className={`px-4 py-3 flex items-start justify-between gap-3 transition-colors cursor-pointer ${
+                            notif.read
+                              ? 'bg-transparent hover:bg-white/5 opacity-75'
+                              : 'bg-[#ff0000]/10 hover:bg-[#ff0000]/15'
+                          }`}
+                        >
+                          <div className="flex items-start gap-3 min-w-0">
+                            {!notif.read && (
+                              <span className="w-2 h-2 rounded-full bg-[#ff0000] mt-1.5 shrink-0" />
+                            )}
+                            {notif.thumbnailUrl && (
+                              <img
+                                src={notif.thumbnailUrl}
+                                alt=""
+                                className="w-12 h-8 object-cover rounded-lg border border-white/10 shrink-0 mt-0.5"
+                              />
+                            )}
+                            <div className="min-w-0">
+                              <div className="text-xs font-bold text-white leading-snug">
+                                {notif.title}
+                              </div>
+                              <p className="text-[11px] text-gray-300 mt-0.5 leading-relaxed">
+                                {notif.message}
+                              </p>
+                              <span className="text-[10px] text-gray-500 mt-1 block">
+                                {new Date(notif.timestamp).toLocaleTimeString('fr-FR', {
+                                  hour: '2-digit',
+                                  minute: '2-digit',
+                                })}{' '}
+                                • {new Date(notif.timestamp).toLocaleDateString('fr-FR')}
+                              </span>
+                            </div>
+                          </div>
+
+                          <button
+                            type="button"
+                            onClick={(e) => {
+                              e.stopPropagation();
+                              setNotifications(
+                                deleteNotification(notif.id, currentUser?.id)
+                              );
+                            }}
+                            className="p-1 rounded-lg text-gray-400 hover:text-red-400 hover:bg-red-500/10 shrink-0 cursor-pointer"
+                            title="Supprimer cette notification"
+                          >
+                            <X className="w-3.5 h-3.5" />
+                          </button>
+                        </div>
+                      ))
+                    )}
+                  </div>
+                </div>
+              )}
+            </div>
 
             {/* DESKTOP ONLY: CRÉER BUTTON */}
             <button
@@ -1029,7 +1555,7 @@ export const Header: React.FC<HeaderProps> = ({
                         className="w-full text-left px-3 py-2 text-xs font-bold text-white bg-[#ff0000] hover:bg-red-700 rounded-xl mb-1 flex items-center gap-2 cursor-pointer"
                       >
                         <ShieldCheck className="w-4 h-4 text-white" />
-                        <span>Panneau Admin (ROOT)</span>
+                        <span>Panneau Admin & Stats Réelles</span>
                       </button>
                     )}
 
@@ -1052,7 +1578,7 @@ export const Header: React.FC<HeaderProps> = ({
                       className="w-full text-left px-3 py-2 text-xs text-zinc-200 hover:bg-white/10 rounded-xl flex items-center gap-2 cursor-pointer"
                     >
                       <UserIcon className="w-4 h-4 text-zinc-400" />
-                      <span>Votre chaîne / Profil</span>
+                      <span>Profil & Statistiques Réelles</span>
                     </button>
 
                     <button
@@ -1073,10 +1599,10 @@ export const Header: React.FC<HeaderProps> = ({
                         setIsUserMenuOpen(false);
                         onLogout();
                       }}
-                      className="w-full text-left px-3 py-2 text-xs text-red-400 hover:bg-red-500/10 rounded-xl flex items-center gap-2 font-bold cursor-pointer"
+                      className="w-full text-left px-3 py-2 text-xs text-red-400 hover:bg-red-500/10 rounded-xl flex items-center gap-2 cursor-pointer"
                     >
                       <LogOut className="w-4 h-4" />
-                      <span>Se déconnecter</span>
+                      <span>Déconnexion</span>
                     </button>
                   </div>
                 )}
@@ -1084,10 +1610,10 @@ export const Header: React.FC<HeaderProps> = ({
             ) : (
               <button
                 onClick={() => onOpenAuth('login')}
-                className="flex items-center gap-1.5 px-3 sm:px-4 h-8 sm:h-9 rounded-full bg-[#ff0000] hover:bg-[#e60000] text-white text-xs sm:text-sm font-bold tracking-tight shadow-sm cursor-pointer"
+                className="flex items-center gap-1.5 px-3 py-1.5 rounded-full bg-[#222222] hover:bg-[#2c2c2c] text-white border border-white/15 text-xs font-semibold transition-all cursor-pointer shrink-0"
               >
-                <LogIn className="w-3.5 h-3.5" />
-                <span className="hidden xs:inline">Se connecter</span>
+                <LogIn className="w-3.5 h-3.5 text-[#ff0000]" />
+                <span>Connexion</span>
               </button>
             )}
           </div>

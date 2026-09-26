@@ -23,11 +23,42 @@ const getGenAIClient = () => {
   });
 };
 
+const MODELS_PRIORITY = ['gemini-3-flash-preview', 'gemini-2.5-flash'];
+
+async function generateWithModelFallback(
+  ai: GoogleGenAI,
+  payload: {
+    contents: any;
+    config?: any;
+  }
+) {
+  let lastErr: unknown = null;
+  for (const modelName of MODELS_PRIORITY) {
+    try {
+      const response = await ai.models.generateContent({
+        model: modelName,
+        contents: payload.contents,
+        config: payload.config,
+      });
+      return response;
+    } catch (err) {
+      lastErr = err;
+    }
+  }
+  throw lastErr;
+}
+
+const LANG_NAMES: Record<string, string> = {
+  'fr-FR': 'français (French)',
+  'en-US': 'anglais (English)',
+  'ar-SA': 'arabe (Arabic)',
+};
+
 async function startServer() {
   const app = express();
   const PORT = Number(process.env.PORT) || 3000;
 
-  app.use(express.json({ limit: '15mb' }));
+  app.use(express.json({ limit: '25mb' }));
 
   // 1. Server-side Gemini AI Content Moderation Endpoint
   app.post('/api/ai/moderate', async (req, res) => {
@@ -41,8 +72,8 @@ async function startServer() {
 
       const ai = getGenAIClient();
       if (!ai) {
-        return res.status(503).json({
-          error: 'GEMINI_API_KEY non configurée sur le serveur, bascule sur le moteur IA local.',
+        return res.status(200).json({
+          fallbackToLocal: true,
         });
       }
 
@@ -78,8 +109,7 @@ Contenu texte soumis : "${text || ''}"
 Si le moindre élément inapproprié est détecté, mets "blocked": true et "isAppropriate": false.`,
       });
 
-      const response = await ai.models.generateContent({
-        model: 'gemini-3.8-flash',
+      const response = await generateWithModelFallback(ai, {
         contents: { parts },
         config: {
           systemInstruction:
@@ -136,19 +166,21 @@ Si le moindre élément inapproprié est détecté, mets "blocked": true et "isA
       const parsed = JSON.parse(jsonText);
       return res.json(parsed);
     } catch (error) {
-      console.error('Gemini moderation error:', error);
-      return res.status(500).json({
-        error: 'Erreur lors de l’analyse Gemini',
+      // Return 200 with fallbackToLocal so client never logs a 500 network error
+      return res.status(200).json({
+        fallbackToLocal: true,
       });
     }
   });
 
-  // 2. Server-side Gemini Audio Transcription Endpoint for Microphone Voice Search
+  // 2. Server-side Gemini Audio Transcription & Voice Translation Endpoint
   app.post('/api/ai/transcribe', async (req, res) => {
     try {
-      const { audioBase64, mimeType } = req.body as {
+      const { audioBase64, mimeType, lang, translateToTarget } = req.body as {
         audioBase64: string;
         mimeType?: string;
+        lang?: string;
+        translateToTarget?: boolean;
       };
 
       if (!audioBase64) {
@@ -157,36 +189,133 @@ Si le moindre élément inapproprié est détecté, mets "blocked": true et "isA
 
       const ai = getGenAIClient();
       if (!ai) {
-        return res.status(503).json({ error: 'GEMINI_API_KEY non configurée' });
+        return res.status(200).json({
+          transcript: '',
+          error: 'Clé API Gemini non configurée sur le serveur.',
+        });
       }
 
       const cleanBase64 = audioBase64.includes('base64,')
         ? audioBase64.split('base64,')[1]
         : audioBase64;
 
-      const response = await ai.models.generateContent({
-        model: 'gemini-3.5-transcribe',
+      const targetLanguageLabel = LANG_NAMES[lang || 'fr-FR'] || 'français (French)';
+      const shouldTranslate = translateToTarget !== false;
+
+      const response = await generateWithModelFallback(ai, {
         contents: {
           parts: [
             {
               inlineData: {
-                mimeType: mimeType || 'audio/webm',
+                mimeType: (mimeType || 'audio/webm').split(';')[0],
                 data: cleanBase64,
               },
             },
             {
-              text: 'Transcris exactement ce qui est dit dans cet enregistrement vocal pour une recherche vidéo. Renvoie uniquement le texte transcrit sans guillemets ni commentaires.',
+              text: shouldTranslate
+                ? `Écoute attentivement cet enregistrement vocal.
+1. Transcris exactement ce que la personne dit dans "originalTranscript".
+2. Traduis (ou garde si c'est déjà dans cette langue) ce qui est dit vers la langue cible "${targetLanguageLabel}" dans "translatedTranscript".
+3. Si l'audio ne contient aucun mot parlé (seulement du silence ou du bruit de fond), renvoie des chaînes vides "".
+Réponds strictement en JSON.`
+                : `Écoute attentivement cet enregistrement vocal (langue attendue: ${targetLanguageLabel}).
+Transcris exactement les paroles prononcées dans "originalTranscript" et "translatedTranscript".
+Si l'audio ne contient aucun mot parlé (seulement du silence), renvoie des chaînes vides "".
+Réponds strictement en JSON.`,
             },
           ],
         },
+        config: {
+          responseMimeType: 'application/json',
+          responseSchema: {
+            type: Type.OBJECT,
+            properties: {
+              originalTranscript: {
+                type: Type.STRING,
+                description: 'Transcription exacte dans la langue parlée.',
+              },
+              translatedTranscript: {
+                type: Type.STRING,
+                description: `Texte transcrit et traduit en ${targetLanguageLabel}.`,
+              },
+              detectedLanguage: {
+                type: Type.STRING,
+                description: 'Langue détectée (ex: fr, en, ar).',
+              },
+            },
+            required: ['originalTranscript', 'translatedTranscript'],
+          },
+        },
       });
 
+      const rawText = (response.text || '{}').trim();
+      let parsed: {
+        originalTranscript?: string;
+        translatedTranscript?: string;
+        detectedLanguage?: string;
+      } = {};
+      try {
+        parsed = JSON.parse(rawText);
+      } catch {
+        parsed = {
+          originalTranscript: rawText,
+          translatedTranscript: rawText,
+        };
+      }
+
+      const finalTranscript = (
+        shouldTranslate
+          ? parsed.translatedTranscript || parsed.originalTranscript || ''
+          : parsed.originalTranscript || parsed.translatedTranscript || ''
+      ).trim();
+
       return res.json({
-        transcript: (response.text || '').trim(),
+        transcript: finalTranscript,
+        originalTranscript: (parsed.originalTranscript || finalTranscript).trim(),
+        translatedTranscript: (parsed.translatedTranscript || finalTranscript).trim(),
+        detectedLanguage: parsed.detectedLanguage || lang || 'fr-FR',
       });
     } catch (error) {
       console.error('Gemini transcription error:', error);
-      return res.status(500).json({ error: 'Erreur de transcription vocale' });
+      return res.status(200).json({
+        transcript: '',
+        error: 'Le service vocal IA est temporairement indisponible.',
+      });
+    }
+  });
+
+  // 3. Server-side Gemini Text Translation Endpoint (for instant voice-text translation FR / EN / AR)
+  app.post('/api/ai/translate', async (req, res) => {
+    try {
+      const { text, targetLang } = req.body as {
+        text?: string;
+        targetLang?: string;
+      };
+
+      const cleaned = (text || '').trim();
+      if (!cleaned) {
+        return res.json({ translatedText: '' });
+      }
+
+      const ai = getGenAIClient();
+      if (!ai) {
+        return res.json({ translatedText: cleaned });
+      }
+
+      const targetLanguageLabel = LANG_NAMES[targetLang || 'fr-FR'] || 'français (French)';
+
+      const response = await generateWithModelFallback(ai, {
+        contents: `Traduis le texte suivant en ${targetLanguageLabel}. Renvoie uniquement la traduction directe sans guillemets ni explications :\n\n"${cleaned}"`,
+      });
+
+      const translated = (response.text || cleaned).trim().replace(/^["«]|["»]$/g, '');
+      return res.json({
+        translatedText: translated || cleaned,
+      });
+    } catch (error) {
+      return res.json({
+        translatedText: (req.body?.text || '').trim(),
+      });
     }
   });
 

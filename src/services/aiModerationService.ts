@@ -1,7 +1,11 @@
 import { AIModerationIncident, User } from '../types';
-import { logUserActivity, recordUserViolationInTelemetry } from '../storage/userNamespace';
+import {
+  logUserActivity,
+  recordUserViolationInTelemetry,
+  addNotification,
+} from '../storage/userNamespace';
 
-const MODERATION_INCIDENTS_KEY = 'mk_ai_moderation_incidents_v2';
+const MODERATION_INCIDENTS_KEY = 'mk_ai_moderation_incidents_v3';
 
 export interface ModerationResult {
   isAppropriate: boolean;
@@ -236,13 +240,20 @@ export const recordModerationIncident = (params: {
     recordUserViolationInTelemetry(user.id, result.severity);
   }
 
+  addNotification({
+    userId: user?.id,
+    title: `Bouclier IA : ${result.violationCategory}`,
+    message: `Contenu bloqué automatiquement : "${contentSnippet.slice(0, 45)}..."`,
+    type: 'security',
+  });
+
   return newIncident;
 };
 
 export const getModerationIncidents = (): AIModerationIncident[] => {
   try {
     const raw = localStorage.getItem(MODERATION_INCIDENTS_KEY);
-    if (!raw) return getSeededModerationIncidents();
+    if (!raw) return [];
     return JSON.parse(raw) as AIModerationIncident[];
   } catch {
     return [];
@@ -253,41 +264,3 @@ export const clearModerationIncidents = (): void => {
   localStorage.setItem(MODERATION_INCIDENTS_KEY, JSON.stringify([]));
 };
 
-const getSeededModerationIncidents = (): AIModerationIncident[] => {
-  const seeded: AIModerationIncident[] = [
-    {
-      id: 'mod-seed-1',
-      userId: 'usr-karim-stream',
-      username: 'KarimStream_TN',
-      userAvatar: 'https://images.unsplash.com/photo-1507003211169-0a1dd7228f2d?w=150&q=80',
-      country: 'Tunisie',
-      source: 'comment',
-      contentSnippet: 'Commentaire contenant des insultes graves envers un créateur...',
-      violationCategory: 'Harcèlement, Insultes & Vulgarité',
-      severity: 'high',
-      confidence: 98,
-      reason: 'Langage injurieux détecté et bloqué automatiquement avant publication.',
-      flaggedTerms: ['insulte', 'harcèlement'],
-      timestamp: new Date(Date.now() - 1000 * 60 * 42).toISOString(),
-      autoBlocked: true,
-    },
-    {
-      id: 'mod-seed-2',
-      userId: 'usr-lucas-gamer',
-      username: 'LucasGamer_FR',
-      userAvatar: 'https://images.unsplash.com/photo-1500648767791-00dcc994a43e?w=150&q=80',
-      country: 'France',
-      source: 'video_upload',
-      contentSnippet: 'Tentative de partage vidéo : Contenu interdit +18 NSFW',
-      violationCategory: 'Contenu Adulte / NSFW (+18)',
-      severity: 'critical',
-      confidence: 99,
-      reason: 'Mise en ligne bloquée automatiquement par le Bouclier IA (Contenu explicite +18).',
-      flaggedTerms: ['nsfw', '18+'],
-      timestamp: new Date(Date.now() - 1000 * 60 * 115).toISOString(),
-      autoBlocked: true,
-    },
-  ];
-  localStorage.setItem(MODERATION_INCIDENTS_KEY, JSON.stringify(seeded));
-  return seeded;
-};

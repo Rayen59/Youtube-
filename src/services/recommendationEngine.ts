@@ -214,14 +214,16 @@ export const generateUserAIAnalysis = (user: User): UserAIAnalysis => {
   // 2. Watch & interaction metrics
   const watchActivities = activities.filter(a => a.action === 'watch');
   const likeActivities = activities.filter(a => a.action === 'like');
-  const searchActivities = activities.filter(a => a.action === 'search');
+  const searchActivities = activities.filter(
+    a => a.action === 'search' || a.action === 'voice_search'
+  );
   const commentActivities = activities.filter(a => a.action === 'comment');
   const shareDownloadActivities = activities.filter(
     a => a.action === 'download' || a.action === 'favorite' || a.action === 'upload'
   );
 
   const totalWatchTimeSeconds = watchActivities.reduce(
-    (acc, curr) => acc + (curr.watchTimeSeconds || 120),
+    (acc, curr) => acc + (curr.watchTimeSeconds || 0),
     0
   );
   const avgDuration =
@@ -232,7 +234,7 @@ export const generateUserAIAnalysis = (user: User): UserAIAnalysis => {
     ? telemetry.hourlyUsage
     : new Array(24).fill(0);
 
-  let peakHour = 20;
+  let peakHour = new Date().getHours();
   let maxVal = -1;
   hourly.forEach((val, h) => {
     if (val > maxVal) {
@@ -242,7 +244,7 @@ export const generateUserAIAnalysis = (user: User): UserAIAnalysis => {
   });
 
   const formatHourSlot = (h: number) => {
-    const nextH = (h + 2) % 24;
+    const nextH = (h + 1) % 24;
     const period =
       h >= 5 && h < 12
         ? 'Matinée'
@@ -268,44 +270,53 @@ export const generateUserAIAnalysis = (user: User): UserAIAnalysis => {
     .map(e => e[0]);
 
   // Persona synthesis
-  let summaryPersona = 'Observateur Explorateur';
-  if (topCategories.length > 0) {
-    const primary = topCategories[0].category;
-    if (primary.includes('Tech') || primary.includes('Développement')) {
-      summaryPersona = 'Ingénieur & Passionné d\'Innovations Numériques';
-    } else if (primary.includes('Cinéma') || primary.includes('3D')) {
-      summaryPersona = 'Cinéphile Exigeant & Amateur d\'Arts Numériques';
-    } else if (primary.includes('Gaming')) {
-      summaryPersona = 'Gamer Assidu & Amateur d\'Esport';
-    } else if (primary.includes('Nature')) {
-      summaryPersona = 'Adepte de Contemplation 4K & Évasion';
-    } else if (primary.includes('Musique')) {
-      summaryPersona = 'Mélomane & Travailleur en Quête de Flow Lo-Fi';
-    } else if (primary.includes('Documentaire')) {
-      summaryPersona = 'Analyste Curieux & Passionné d\'Histoire/Sciences';
+  let summaryPersona = 'Compte Actif (Aucune activité enregistrée)';
+  if (activities.length > 0 || topCategories.length > 0) {
+    summaryPersona = 'Explorateur Actif MK';
+    if (topCategories.length > 0) {
+      const primary = topCategories[0].category;
+      if (primary.includes('Tech') || primary.includes('Développement')) {
+        summaryPersona = 'Ingénieur & Passionné d\'Innovations Numériques';
+      } else if (primary.includes('Cinéma') || primary.includes('3D')) {
+        summaryPersona = 'Cinéphile Exigeant & Amateur d\'Arts Numériques';
+      } else if (primary.includes('Gaming')) {
+        summaryPersona = 'Gamer Assidu & Amateur d\'Esport';
+      } else if (primary.includes('Nature')) {
+        summaryPersona = 'Adepte de Contemplation 4K & Évasion';
+      } else if (primary.includes('Musique')) {
+        summaryPersona = 'Mélomane & Travailleur en Quête de Flow Lo-Fi';
+      } else if (primary.includes('Documentaire')) {
+        summaryPersona = 'Analyste Curieux & Passionné d\'Histoire/Sciences';
+      }
     }
   }
 
-  const engagementIndex = Math.min(
-    99,
-    Math.round(
-      35 +
-        watchActivities.length * 6 +
-        likeActivities.length * 9 +
-        commentActivities.length * 12 +
-        shareDownloadActivities.length * 10
-    )
-  );
+  const engagementIndex =
+    activities.length === 0 && favorites.likedVideoIds.length === 0
+      ? 0
+      : Math.min(
+          100,
+          Math.round(
+            watchActivities.length * 8 +
+              likeActivities.length * 10 +
+              commentActivities.length * 15 +
+              searchActivities.length * 5 +
+              shareDownloadActivities.length * 12
+          )
+        );
 
-  const retentionRate = Math.min(
-    98,
-    Math.max(54, Math.round(62 + (avgDuration / 600) * 30))
-  );
+  const retentionRate =
+    watchActivities.length === 0
+      ? 0
+      : Math.min(100, Math.max(10, Math.round((avgDuration / 60) * 20)));
 
-  const bingeScore = Math.min(
-    97,
-    Math.max(30, Math.round(40 + watchActivities.length * 8 + (telemetry.sessionsCount || 1) * 2))
-  );
+  const bingeScore =
+    watchActivities.length === 0
+      ? 0
+      : Math.min(
+          100,
+          Math.round(watchActivities.length * 10 + (telemetry.sessionsCount || 1) * 5)
+        );
 
   return {
     userId: user.id,
@@ -315,36 +326,38 @@ export const generateUserAIAnalysis = (user: User): UserAIAnalysis => {
       topCategories:
         topCategories.length > 0
           ? topCategories
-          : [{ category: 'Découverte générale', score: 5 }],
+          : [{ category: 'Aucune catégorie visionnée pour le moment', score: 0 }],
       preferredTags:
-        preferredTags.length > 0 ? preferredTags : ['4K', 'Tutoriel', 'Innovations'],
+        preferredTags.length > 0 ? preferredTags : ['Aucun tag favori pour le moment'],
       favoriteVideosCount:
         favorites.likedVideoIds.length + favorites.savedVideoIds.length,
       completionTendency:
-        avgDuration > 300
-          ? 'Complétion élevée (> 80% des vidéos)'
-          : 'Visionnage sélectif et zapping rapide',
+        watchActivities.length === 0
+          ? 'Aucun visionnage enregistré'
+          : avgDuration > 120
+          ? 'Complétion élevée'
+          : 'Visionnage court / en cours',
     },
     whatTheyDislike: {
       avoidedCategories:
-        avoidedCategories.length > 0 ? avoidedCategories : preferences.dislikedTags,
+        avoidedCategories.length > 0 ? avoidedCategories : ['Aucune catégorie rejetée'],
       dislikedTags:
         preferences.dislikedTags.length > 0
           ? preferences.dislikedTags
-          : ['Contenu putaclic', 'Qualité basse (<720p)'],
+          : ['Aucun tag filtré'],
       dislikedVideosCount: favorites.dislikedVideoIds.length,
       bounceRateReason:
         favorites.dislikedVideoIds.length > 0
-          ? 'Rejette activement les contenus hors sujet'
-          : 'Très tolérant aux recommandations',
+          ? `${favorites.dislikedVideoIds.length} vidéo(s) signalée(s) comme non appréciée(s)`
+          : 'Aucun signalement négatif',
     },
     viewingHabits: {
-      totalWatchTimeMinutes: Math.max(1, Math.round(totalWatchTimeSeconds / 60)),
-      averageVideoDurationMinutes: Math.round(avgDuration / 60) || 12,
+      totalWatchTimeMinutes: Math.round((totalWatchTimeSeconds / 60) * 10) / 10,
+      averageVideoDurationMinutes: Math.round((avgDuration / 60) * 10) / 10,
       mostActiveTimeSlot: formatHourSlot(peakHour),
       peakHourIndex: peakHour,
       playbackSpeedPreference: `${preferences.playbackSpeed || 1}x`,
-      preferredResolution: preferences.preferredQuality || '1080p',
+      preferredResolution: preferences.preferredQuality || '4K',
     },
     advancedMetrics: {
       engagementIndex,
@@ -353,14 +366,17 @@ export const generateUserAIAnalysis = (user: User): UserAIAnalysis => {
       trustScore: telemetry.trustScore ?? 100,
       totalActionsCount: activities.length,
       watchActionsCount: watchActivities.length,
-      likeActionsCount: likeActivities.length + favorites.likedVideoIds.length,
+      likeActionsCount: favorites.likedVideoIds.length,
       searchActionsCount: searchActivities.length,
       commentActionsCount: commentActivities.length,
       shareDownloadCount:
         shareDownloadActivities.length + favorites.downloadedVideos.length,
       hourlyDistribution: hourly,
-      estimatedDataMB: telemetry.bandwidthMb || 320,
+      estimatedDataMB: telemetry.bandwidthMb || 0,
     },
-    recommendationConfidence: Math.min(99, Math.max(74, 70 + activities.length * 3)),
+    recommendationConfidence:
+      activities.length === 0
+        ? 0
+        : Math.min(99, Math.round(50 + activities.length * 5)),
   };
 };

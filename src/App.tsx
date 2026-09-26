@@ -27,6 +27,7 @@ import {
   logUserActivity,
   getUserFile,
   saveUserFile,
+  addNotification,
 } from './storage/userNamespace';
 import {
   getCustomVideos,
@@ -241,6 +242,14 @@ export default function App() {
     saveCustomVideo(newVideo);
     setCustomVideos((prev) => [newVideo, ...prev.filter((v) => v.id !== newVideo.id)]);
     setEditingVideo(null);
+    addNotification({
+      userId: currentUser?.id,
+      title: 'Nouvelle vidéo publiée',
+      message: `Votre vidéo "${newVideo.title}" est maintenant en ligne en Haute Qualité.`,
+      type: 'video_upload',
+      videoId: newVideo.id,
+      thumbnailUrl: newVideo.thumbnailUrl,
+    });
     showToast(`Vidéo "${newVideo.title}" publiée en Haute Qualité !`);
     handleSelectVideo(newVideo);
   };
@@ -259,6 +268,14 @@ export default function App() {
       setCurrentNav((prev) => ({ ...prev, selectedVideo: updatedVideo }));
     }
     setEditingVideo(null);
+    addNotification({
+      userId: currentUser?.id,
+      title: 'Publication mise à jour',
+      message: `Les modifications sur "${updatedVideo.title}" ont été enregistrées.`,
+      type: 'system',
+      videoId: updatedVideo.id,
+      thumbnailUrl: updatedVideo.thumbnailUrl,
+    });
     showToast(`Publication "${updatedVideo.title}" mise à jour avec succès !`);
   };
 
@@ -390,6 +407,10 @@ export default function App() {
           setEditingVideo(null);
           setIsCreateModalOpen(true);
         }}
+        onSelectVideoById={(videoId) => {
+          const v = allVideos.find((vid) => vid.id === videoId);
+          if (v) handleSelectVideo(v);
+        }}
         theme={theme}
         onToggleTheme={() => setTheme(theme === 'dark' ? 'light' : 'dark')}
         onToggleFilters={() => setIsFiltersOpen(!isFiltersOpen)}
@@ -505,6 +526,7 @@ export default function App() {
               <SubscriptionsView
                 currentUser={currentUser}
                 onSelectVideo={handleSelectVideo}
+                allVideos={allVideos}
               />
             </div>
           )}
@@ -528,6 +550,7 @@ export default function App() {
                 currentUser={currentUser}
                 onRequireAuth={handleRequireAuth}
                 userVideos={userOwnedVideos}
+                allVideos={allVideos}
                 onSelectVideo={handleSelectVideo}
                 onEditVideo={handleOpenEditVideo}
                 onDeleteVideo={handleDeleteVideo}

@@ -185,3 +185,25 @@ export interface RecommendationScore {
   score: number;
   matchReasons: string[];
 }
+
+export interface AppNotification {
+  id: string;
+  userId?: string;
+  title: string;
+  message: string;
+  type: 'video_upload' | 'subscription' | 'like' | 'comment' | 'security' | 'system';
+  videoId?: string;
+  thumbnailUrl?: string;
+  read: boolean;
+  timestamp: string;
+}
+
+export interface SubscribedChannel {
+  channelId: string;
+  channelTitle: string;
+  channelAvatar: string;
+  subscribers: string;
+  notificationsEnabled: boolean;
+  subscribedAt: string;
+}
+

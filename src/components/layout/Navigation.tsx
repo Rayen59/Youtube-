@@ -34,9 +34,9 @@ export const Navigation: React.FC<NavigationProps> = ({
   const desktopNavItems = [
     { id: 'home', label: 'Accueil', icon: Home },
     { id: 'trending', label: 'Tendances', icon: Flame },
-    { id: 'subscriptions', label: 'Abonnements', icon: Tv, requiresAuth: true },
-    { id: 'library', label: 'Bibliothèque', icon: Bookmark, requiresAuth: true },
-    { id: 'profile', label: 'Profil', icon: UserIcon, requiresAuth: true },
+    { id: 'subscriptions', label: 'Abonnements', icon: Tv },
+    { id: 'library', label: 'Bibliothèque', icon: Bookmark },
+    { id: 'profile', label: 'Profil & Statistiques', icon: UserIcon },
   ];
 
   const handleItemClick = (id: string, requiresAuth = false, label = '') => {
@@ -62,7 +62,7 @@ export const Navigation: React.FC<NavigationProps> = ({
             return (
               <button
                 key={item.id}
-                onClick={() => handleItemClick(item.id, item.requiresAuth, item.label)}
+                onClick={() => handleItemClick(item.id, false, item.label)}
                 className={`w-full flex items-center gap-4 px-3.5 py-3 rounded-2xl text-xs font-bold transition-all cursor-pointer ${
                   isActive
                     ? 'bg-[#ff0000] text-white shadow-[0_0_15px_rgba(255,0,0,0.35)]'
@@ -130,7 +130,7 @@ export const Navigation: React.FC<NavigationProps> = ({
           <span className="text-[10px] font-medium mt-0.5">Accueil</span>
         </button>
 
-        {/* 2. SHORTS / TENDANCES */}
+        {/* 2. TENDANCES */}
         <button
           onClick={() => handleItemClick('trending')}
           className={`flex flex-col items-center justify-center flex-1 py-1 transition-colors cursor-pointer ${
@@ -138,7 +138,7 @@ export const Navigation: React.FC<NavigationProps> = ({
           }`}
         >
           <Flame className={`w-5 h-5 ${currentView === 'trending' ? 'text-white fill-[#ff0000]' : 'text-zinc-400'}`} />
-          <span className="text-[10px] font-medium mt-0.5">Shorts</span>
+          <span className="text-[10px] font-medium mt-0.5">Tendances</span>
         </button>
 
         {/* 3. CENTER PLUS (+) BUTTON FOR CREATION (SCREENSHOT 2) */}
@@ -158,21 +158,20 @@ export const Navigation: React.FC<NavigationProps> = ({
 
         {/* 4. ABONNEMENTS */}
         <button
-          onClick={() => handleItemClick('subscriptions', true, 'Abonnements')}
+          onClick={() => handleItemClick('subscriptions')}
           className={`flex flex-col items-center justify-center flex-1 py-1 transition-colors cursor-pointer relative ${
             currentView === 'subscriptions' ? 'text-white' : 'text-zinc-400'
           }`}
         >
           <div className="relative">
             <PlaySquare className={`w-5 h-5 ${currentView === 'subscriptions' ? 'text-white' : 'text-zinc-400'}`} />
-            <span className="absolute -top-0.5 -right-0.5 w-2 h-2 rounded-full bg-[#ff0000]" />
           </div>
           <span className="text-[10px] font-medium mt-0.5">Abonnements</span>
         </button>
 
-        {/* 5. VOUS / PROFIL (USER AVATAR OR INITIAL JUST LIKE SCREENSHOT 2) */}
+        {/* 5. VOUS / PROFIL */}
         <button
-          onClick={() => handleItemClick('profile', true, 'Profil')}
+          onClick={() => handleItemClick('profile')}
           className={`flex flex-col items-center justify-center flex-1 py-1 transition-colors cursor-pointer ${
             currentView === 'profile' ? 'text-white' : 'text-zinc-400'
           }`}
