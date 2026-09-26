@@ -19,6 +19,7 @@ interface NavigationProps {
   onOpenAdmin: () => void;
   onRequireAuth: (message: string) => void;
   onOpenCreateModal?: () => void;
+  watchControlsVisible?: boolean;
 }
 
 export const Navigation: React.FC<NavigationProps> = ({
@@ -28,6 +29,7 @@ export const Navigation: React.FC<NavigationProps> = ({
   onOpenAdmin,
   onRequireAuth,
   onOpenCreateModal,
+  watchControlsVisible = false,
 }) => {
   const desktopNavItems = [
     { id: 'home', label: 'Accueil', icon: Home },
@@ -106,9 +108,16 @@ export const Navigation: React.FC<NavigationProps> = ({
 
       {/* ========================================================
           MOBILE BOTTOM NAVIGATION (EXACT REPLICA OF SCREENSHOT 2)
+          Hides automatically on video open, appears when user clicks video!
           Accueil | Shorts | (+) | Abonnements | Vous
          ======================================================== */}
-      <nav className="md:hidden fixed bottom-0 left-0 right-0 h-14 bg-[#0f0f0f] border-t border-[#282828] z-40 px-2 flex items-center justify-around select-none">
+      <nav
+        className={`md:hidden fixed bottom-0 left-0 right-0 h-14 bg-[#0f0f0f] border-t border-[#282828] z-40 px-2 flex items-center justify-around select-none transition-all duration-300 ${
+          currentView === 'watch' && !watchControlsVisible
+            ? 'translate-y-full opacity-0 pointer-events-none'
+            : 'translate-y-0 opacity-100'
+        }`}
+      >
         
         {/* 1. ACCUEIL */}
         <button

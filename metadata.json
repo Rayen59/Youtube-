@@ -1,6 +1,6 @@
 {
   "name": "MK - Streaming Vidéo",
   "description": "Plateforme moderne de streaming vidéo inspirée de YouTube avec système de recommandation intelligent, espaces utilisateurs isolés et panneau administrateur.",
-  "requestFramePermissions": [],
+  "requestFramePermissions": ["microphone"],
   "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
 }

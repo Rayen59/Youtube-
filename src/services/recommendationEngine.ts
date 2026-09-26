@@ -1,6 +1,14 @@
-import { Video, UserActivity, UserPreferences, UserFavorites, RecommendationScore, User } from '../types';
+import {
+  Video,
+  UserActivity,
+  UserPreferences,
+  UserFavorites,
+  RecommendationScore,
+  User,
+  UserGeoTelemetry,
+} from '../types';
 import { MOCK_VIDEOS } from '../data/mockVideos';
-import { getUserFile, getStoredUsers } from '../storage/userNamespace';
+import { getUserFile, getUserGeoTelemetry } from '../storage/userNamespace';
 
 export interface UserAIAnalysis {
   userId: string;
@@ -22,8 +30,23 @@ export interface UserAIAnalysis {
     totalWatchTimeMinutes: number;
     averageVideoDurationMinutes: number;
     mostActiveTimeSlot: string;
+    peakHourIndex: number;
     playbackSpeedPreference: string;
     preferredResolution: string;
+  };
+  advancedMetrics: {
+    engagementIndex: number; // 0-100
+    retentionRate: number; // %
+    bingeScore: number; // 0-100
+    trustScore: number; // 0-100
+    totalActionsCount: number;
+    watchActionsCount: number;
+    likeActionsCount: number;
+    searchActionsCount: number;
+    commentActionsCount: number;
+    shareDownloadCount: number;
+    hourlyDistribution: number[]; // 24 hours
+    estimatedDataMB: number;
   };
   recommendationConfidence: number; // e.g. 94%
 }
@@ -126,7 +149,6 @@ export const getPersonalizedRecommendations = (
       }
 
       // 4. Collaborative filtering bonus
-      // If user liked similar videos, boost
       if (likedSet.has(video.id)) {
         score += 40;
         matchReasons.push('Vous avez aimé cette vidéo');
@@ -155,7 +177,7 @@ export const getPersonalizedRecommendations = (
 };
 
 /**
- * Generates in-depth AI Analysis for Admin Dashboard
+ * Generates in-depth AI Analysis & Real Telemetry Diagnostics for Admin Dashboard
  */
 export const generateUserAIAnalysis = (user: User): UserAIAnalysis => {
   const activities = getUserFile<UserActivity[]>(user.id, 'activities.json') || [];
@@ -176,20 +198,61 @@ export const generateUserAIAnalysis = (user: User): UserAIAnalysis => {
     downloadedVideos: [],
     customPlaylists: [],
   };
+  const telemetry: UserGeoTelemetry = getUserGeoTelemetry(user.id);
 
   // 1. Calculate affinities
-  const categoryScores = Object.entries(preferences.categoryAffinity).map(([category, score]) => ({
-    category,
-    score,
-  })).sort((a, b) => b.score - a.score);
+  const categoryScores = Object.entries(preferences.categoryAffinity)
+    .map(([category, score]) => ({
+      category,
+      score,
+    }))
+    .sort((a, b) => b.score - a.score);
 
   const topCategories = categoryScores.filter(c => c.score > 0);
   const avoidedCategories = categoryScores.filter(c => c.score < 0).map(c => c.category);
 
-  // 2. Watch metrics
+  // 2. Watch & interaction metrics
   const watchActivities = activities.filter(a => a.action === 'watch');
-  const totalWatchTimeSeconds = watchActivities.reduce((acc, curr) => acc + (curr.watchTimeSeconds || 120), 0);
-  const avgDuration = watchActivities.length > 0 ? totalWatchTimeSeconds / watchActivities.length : 0;
+  const likeActivities = activities.filter(a => a.action === 'like');
+  const searchActivities = activities.filter(a => a.action === 'search');
+  const commentActivities = activities.filter(a => a.action === 'comment');
+  const shareDownloadActivities = activities.filter(
+    a => a.action === 'download' || a.action === 'favorite' || a.action === 'upload'
+  );
+
+  const totalWatchTimeSeconds = watchActivities.reduce(
+    (acc, curr) => acc + (curr.watchTimeSeconds || 120),
+    0
+  );
+  const avgDuration =
+    watchActivities.length > 0 ? totalWatchTimeSeconds / watchActivities.length : 0;
+
+  // 3. Peak hour calculation from real 24h telemetry array
+  const hourly = Array.isArray(telemetry.hourlyUsage) && telemetry.hourlyUsage.length === 24
+    ? telemetry.hourlyUsage
+    : new Array(24).fill(0);
+
+  let peakHour = 20;
+  let maxVal = -1;
+  hourly.forEach((val, h) => {
+    if (val > maxVal) {
+      maxVal = val;
+      peakHour = h;
+    }
+  });
+
+  const formatHourSlot = (h: number) => {
+    const nextH = (h + 2) % 24;
+    const period =
+      h >= 5 && h < 12
+        ? 'Matinée'
+        : h >= 12 && h < 18
+        ? 'Après-midi'
+        : h >= 18 && h <= 23
+        ? 'Soirée'
+        : 'Nuit';
+    return `${period} (${String(h).padStart(2, '0')}h00 - ${String(nextH).padStart(2, '0')}h00)`;
+  };
 
   // Liked tags collection
   const likedVideos = MOCK_VIDEOS.filter(v => favorites.likedVideoIds.includes(v.id));
@@ -218,32 +281,86 @@ export const generateUserAIAnalysis = (user: User): UserAIAnalysis => {
       summaryPersona = 'Adepte de Contemplation 4K & Évasion';
     } else if (primary.includes('Musique')) {
       summaryPersona = 'Mélomane & Travailleur en Quête de Flow Lo-Fi';
+    } else if (primary.includes('Documentaire')) {
+      summaryPersona = 'Analyste Curieux & Passionné d\'Histoire/Sciences';
     }
   }
+
+  const engagementIndex = Math.min(
+    99,
+    Math.round(
+      35 +
+        watchActivities.length * 6 +
+        likeActivities.length * 9 +
+        commentActivities.length * 12 +
+        shareDownloadActivities.length * 10
+    )
+  );
+
+  const retentionRate = Math.min(
+    98,
+    Math.max(54, Math.round(62 + (avgDuration / 600) * 30))
+  );
+
+  const bingeScore = Math.min(
+    97,
+    Math.max(30, Math.round(40 + watchActivities.length * 8 + (telemetry.sessionsCount || 1) * 2))
+  );
 
   return {
     userId: user.id,
     username: user.username,
     summaryPersona,
     whatTheyLike: {
-      topCategories: topCategories.length > 0 ? topCategories : [{ category: 'Découverte générale', score: 5 }],
-      preferredTags: preferredTags.length > 0 ? preferredTags : ['4K', 'Tutoriel', 'Innovations'],
-      favoriteVideosCount: favorites.likedVideoIds.length + favorites.savedVideoIds.length,
-      completionTendency: avgDuration > 300 ? 'Complétion élevée (> 80% des vidéos)' : 'Visionnage sélectif et zapping rapide',
+      topCategories:
+        topCategories.length > 0
+          ? topCategories
+          : [{ category: 'Découverte générale', score: 5 }],
+      preferredTags:
+        preferredTags.length > 0 ? preferredTags : ['4K', 'Tutoriel', 'Innovations'],
+      favoriteVideosCount:
+        favorites.likedVideoIds.length + favorites.savedVideoIds.length,
+      completionTendency:
+        avgDuration > 300
+          ? 'Complétion élevée (> 80% des vidéos)'
+          : 'Visionnage sélectif et zapping rapide',
     },
     whatTheyDislike: {
-      avoidedCategories: avoidedCategories.length > 0 ? avoidedCategories : preferences.dislikedTags,
-      dislikedTags: preferences.dislikedTags.length > 0 ? preferences.dislikedTags : ['Contenu putaclic', 'Qualité basse (<720p)'],
+      avoidedCategories:
+        avoidedCategories.length > 0 ? avoidedCategories : preferences.dislikedTags,
+      dislikedTags:
+        preferences.dislikedTags.length > 0
+          ? preferences.dislikedTags
+          : ['Contenu putaclic', 'Qualité basse (<720p)'],
       dislikedVideosCount: favorites.dislikedVideoIds.length,
-      bounceRateReason: favorites.dislikedVideoIds.length > 0 ? 'Rejette activement les contenus hors sujet' : 'Très tolérant aux recommandations',
+      bounceRateReason:
+        favorites.dislikedVideoIds.length > 0
+          ? 'Rejette activement les contenus hors sujet'
+          : 'Très tolérant aux recommandations',
     },
     viewingHabits: {
-      totalWatchTimeMinutes: Math.round(totalWatchTimeSeconds / 60),
+      totalWatchTimeMinutes: Math.max(1, Math.round(totalWatchTimeSeconds / 60)),
       averageVideoDurationMinutes: Math.round(avgDuration / 60) || 12,
-      mostActiveTimeSlot: 'Soirée (19h00 - 23h30)',
+      mostActiveTimeSlot: formatHourSlot(peakHour),
+      peakHourIndex: peakHour,
       playbackSpeedPreference: `${preferences.playbackSpeed || 1}x`,
       preferredResolution: preferences.preferredQuality || '1080p',
     },
-    recommendationConfidence: Math.min(99, Math.max(72, 70 + (activities.length * 3))),
+    advancedMetrics: {
+      engagementIndex,
+      retentionRate,
+      bingeScore,
+      trustScore: telemetry.trustScore ?? 100,
+      totalActionsCount: activities.length,
+      watchActionsCount: watchActivities.length,
+      likeActionsCount: likeActivities.length + favorites.likedVideoIds.length,
+      searchActionsCount: searchActivities.length,
+      commentActionsCount: commentActivities.length,
+      shareDownloadCount:
+        shareDownloadActivities.length + favorites.downloadedVideos.length,
+      hourlyDistribution: hourly,
+      estimatedDataMB: telemetry.bandwidthMb || 320,
+    },
+    recommendationConfidence: Math.min(99, Math.max(74, 70 + activities.length * 3)),
   };
 };

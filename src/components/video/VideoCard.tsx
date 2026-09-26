@@ -4,26 +4,33 @@ import {
   Bookmark,
   Share2,
   MoreVertical,
-  Play,
-  Clock,
+  Trash2,
+  Edit3,
+  Sparkles,
 } from 'lucide-react';
 import { Video } from '../../types';
 
 interface VideoCardProps {
   video?: Video;
   isLoading?: boolean;
+  canManage?: boolean;
   onSelect?: (video: Video) => void;
   recommendationReason?: string;
   onSaveQuick?: (video: Video, e: React.MouseEvent) => void;
   onShareQuick?: (video: Video, e: React.MouseEvent) => void;
+  onEditVideo?: (video: Video, e: React.MouseEvent) => void;
+  onDeleteVideo?: (video: Video, e: React.MouseEvent) => void;
 }
 
 export const VideoCard: React.FC<VideoCardProps> = ({
   video,
   isLoading = false,
+  canManage = false,
   onSelect,
   onSaveQuick,
   onShareQuick,
+  onEditVideo,
+  onDeleteVideo,
 }) => {
   const [isHovered, setIsHovered] = useState(false);
   const [showOptions, setShowOptions] = useState(false);
@@ -31,7 +38,6 @@ export const VideoCard: React.FC<VideoCardProps> = ({
   const optionsRef = useRef<HTMLDivElement>(null);
 
   if (isLoading || !video) {
-    // Pure YouTube Skeleton Loader (Matches Screenshot 2)
     return (
       <div className="flex flex-col gap-3 animate-pulse pb-4">
         <div className="aspect-video w-full rounded-none sm:rounded-xl bg-[#282828]" />
@@ -64,6 +70,9 @@ export const VideoCard: React.FC<VideoCardProps> = ({
     return `${views}`;
   };
 
+  const isUserPublication =
+    canManage || Boolean(video.isFromGallery) || Boolean(video.creatorId);
+
   return (
     <div
       onClick={() => onSelect && onSelect(video)}
@@ -71,19 +80,21 @@ export const VideoCard: React.FC<VideoCardProps> = ({
       onMouseLeave={handleMouseLeave}
       className="group flex flex-col cursor-pointer select-none relative transition-all duration-150 pb-4 sm:pb-6"
     >
-      {/* 16:9 THUMBNAIL (YouTube pure styling - no heavy boxes) */}
+      {/* 16:9 HIGH-DEFINITION THUMBNAIL */}
       <div className="relative aspect-video w-full overflow-hidden rounded-none sm:rounded-xl bg-[#202020]">
-        {/* Main Thumbnail Image */}
         <img
           src={video.thumbnailUrl}
           alt={video.title}
           loading="lazy"
+          style={{
+            filter: video.videoFilter || 'contrast(1.04) saturate(1.08)',
+          }}
           className="w-full h-full object-cover group-hover:scale-[1.02] transition-transform duration-200 ease-out"
         />
 
         {/* Hover preview simulation with animated red progress bar */}
         {isHovered && (
-          <div className="absolute inset-0 bg-black/30 flex flex-col justify-end p-2 pointer-events-none transition-opacity duration-200">
+          <div className="absolute inset-0 bg-black/25 flex flex-col justify-end p-2 pointer-events-none transition-opacity duration-200">
             <div className="h-1 w-full bg-white/20 rounded-full overflow-hidden mb-0.5">
               <div className="h-full bg-[#ff0000] w-1/3 animate-pulse" />
             </div>
@@ -95,17 +106,22 @@ export const VideoCard: React.FC<VideoCardProps> = ({
           {video.durationFormatted}
         </div>
 
-        {/* Resolution Badge if 4K */}
-        {video.resolution === '4K' && (
-          <div className="absolute top-2 right-2 px-1.5 py-0.5 rounded bg-black/75 text-gray-200 text-[10px] font-bold uppercase tracking-wider backdrop-blur-xs pointer-events-none">
-            4K
-          </div>
-        )}
+        {/* High Quality Resolution Badge */}
+        <div className="absolute top-2 right-2 flex items-center gap-1 pointer-events-none">
+          {video.isFromGallery && (
+            <span className="px-1.5 py-0.5 rounded bg-[#ff0000]/90 text-white text-[9px] font-black uppercase tracking-wider shadow">
+              MA VIDÉO
+            </span>
+          )}
+          <span className="px-1.5 py-0.5 rounded bg-black/80 text-amber-300 border border-amber-400/30 text-[10px] font-black uppercase tracking-wider backdrop-blur-xs flex items-center gap-0.5">
+            <Sparkles className="w-2.5 h-2.5 text-[#ff0000]" />
+            {video.resolution === '4K' ? '4K HDR' : `${video.resolution} HQ`}
+          </span>
+        </div>
       </div>
 
       {/* METADATA ROW (Avatar + Title + Channel + Views - Exact YouTube Layout) */}
       <div className="flex gap-3 pt-3 px-3 sm:px-0 items-start">
-        {/* Channel Avatar */}
         <img
           src={video.channelAvatar}
           alt={video.channelTitle}
@@ -113,14 +129,11 @@ export const VideoCard: React.FC<VideoCardProps> = ({
           className="w-9 h-9 sm:w-10 sm:h-10 rounded-full object-cover shrink-0 mt-0.5 hover:opacity-90"
         />
 
-        {/* Video Information */}
         <div className="flex-1 min-w-0 pr-1">
-          {/* Title (2 lines max, clean YouTube font) */}
           <h3 className="text-[14px] sm:text-[15px] font-medium text-white leading-snug line-clamp-2 group-hover:text-zinc-100 transition-colors">
             {video.title}
           </h3>
 
-          {/* Channel Name & Stats Line */}
           <div className="text-xs text-[#aaa] mt-1 space-y-0.5">
             <div className="flex items-center gap-1 hover:text-white transition-colors">
               <span className="truncate">{video.channelTitle}</span>
@@ -144,7 +157,7 @@ export const VideoCard: React.FC<VideoCardProps> = ({
               e.stopPropagation();
               setShowOptions(!showOptions);
             }}
-            className="w-8 h-8 rounded-full flex items-center justify-center text-zinc-400 hover:text-white hover:bg-white/10 opacity-70 group-hover:opacity-100 transition-all cursor-pointer"
+            className="w-8 h-8 rounded-full flex items-center justify-center text-zinc-400 hover:text-white hover:bg-white/10 opacity-85 group-hover:opacity-100 transition-all cursor-pointer"
             title="Options"
           >
             <MoreVertical className="w-4 h-4" />
@@ -154,7 +167,7 @@ export const VideoCard: React.FC<VideoCardProps> = ({
           {showOptions && (
             <div
               onClick={(e) => e.stopPropagation()}
-              className="absolute right-0 top-8 w-52 bg-[#282828] border border-[#3f3f3f] rounded-xl shadow-2xl py-1 z-40 text-xs text-zinc-200 animate-in fade-in zoom-in-95 duration-100"
+              className="absolute right-0 top-8 w-56 bg-[#242424] border border-[#3f3f3f] rounded-2xl shadow-2xl py-1.5 z-40 text-xs text-zinc-200 animate-in fade-in zoom-in-95 duration-100"
             >
               <button
                 type="button"
@@ -167,6 +180,7 @@ export const VideoCard: React.FC<VideoCardProps> = ({
                 <Bookmark className="w-4 h-4 text-zinc-400" />
                 <span>Enregistrer dans Favoris</span>
               </button>
+
               <button
                 type="button"
                 onClick={(e) => {
@@ -178,6 +192,37 @@ export const VideoCard: React.FC<VideoCardProps> = ({
                 <Share2 className="w-4 h-4 text-zinc-400" />
                 <span>Partager la vidéo</span>
               </button>
+
+              {isUserPublication && onEditVideo && (
+                <>
+                  <div className="my-1 border-t border-white/10" />
+                  <button
+                    type="button"
+                    onClick={(e) => {
+                      setShowOptions(false);
+                      onEditVideo(video, e);
+                    }}
+                    className="w-full text-left px-3.5 py-2.5 hover:bg-white/10 flex items-center gap-2.5 text-amber-300 font-semibold transition-colors cursor-pointer"
+                  >
+                    <Edit3 className="w-4 h-4 text-amber-400" />
+                    <span>Modifier ma vidéo (Studio)</span>
+                  </button>
+                </>
+              )}
+
+              {isUserPublication && onDeleteVideo && (
+                <button
+                  type="button"
+                  onClick={(e) => {
+                    setShowOptions(false);
+                    onDeleteVideo(video, e);
+                  }}
+                  className="w-full text-left px-3.5 py-2.5 hover:bg-red-500/15 flex items-center gap-2.5 text-red-400 font-bold transition-colors cursor-pointer"
+                >
+                  <Trash2 className="w-4 h-4 text-red-400" />
+                  <span>Supprimer ma publication</span>
+                </button>
+              )}
             </div>
           )}
         </div>

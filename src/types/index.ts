@@ -23,6 +23,16 @@ export interface Video {
   fallbackUrls?: string[];
   isFromGallery?: boolean;
   fileSizeMb?: number;
+  creatorId?: string;
+  trimStart?: number;
+  trimEnd?: number;
+  videoFilter?: string;
+  brightness?: number;
+  contrast?: number;
+  saturation?: number;
+  defaultPlaybackSpeed?: number;
+  defaultMuted?: boolean;
+  ultraHqEnhanced?: boolean;
 }
 
 export interface CommentReply {
@@ -50,6 +60,43 @@ export interface Comment {
   replies?: CommentReply[];
 }
 
+export interface UserGeoTelemetry {
+  country: string;
+  countryCode: string;
+  flag: string;
+  city: string;
+  timezone: string;
+  language: string;
+  deviceType: 'Mobile' | 'Desktop' | 'Tablette';
+  os: string;
+  browser: string;
+  ipMasked: string;
+  screenResolution: string;
+  sessionsCount: number;
+  bandwidthMb: number;
+  hourlyUsage: number[]; // 24 slots (0h to 23h)
+  trustScore: number; // 0 to 100
+  isSuspended?: boolean;
+  suspensionReason?: string;
+}
+
+export interface AIModerationIncident {
+  id: string;
+  userId: string;
+  username: string;
+  userAvatar: string;
+  country?: string;
+  source: 'video_upload' | 'comment' | 'reply' | 'search' | 'voice_search';
+  contentSnippet: string;
+  violationCategory: string;
+  severity: 'low' | 'medium' | 'high' | 'critical';
+  confidence: number;
+  reason: string;
+  flaggedTerms: string[];
+  timestamp: string;
+  autoBlocked: boolean;
+}
+
 export interface User {
   id: string;
   username: string;
@@ -60,16 +107,39 @@ export interface User {
   createdAt: string;
   channelName?: string;
   subscribersCount?: number;
+  country?: string;
+  countryCode?: string;
+  flag?: string;
+  city?: string;
+  timezone?: string;
+  deviceType?: 'Mobile' | 'Desktop' | 'Tablette';
+  os?: string;
+  browser?: string;
+  ipMasked?: string;
+  isSuspended?: boolean;
 }
 
 export interface UserActivity {
   id: string;
-  action: 'watch' | 'like' | 'dislike' | 'comment' | 'search' | 'favorite' | 'download';
+  action:
+    | 'watch'
+    | 'like'
+    | 'dislike'
+    | 'comment'
+    | 'search'
+    | 'voice_search'
+    | 'favorite'
+    | 'download'
+    | 'upload'
+    | 'ai_blocked';
   videoId?: string;
   videoTitle?: string;
   category?: string;
   searchQuery?: string;
   watchTimeSeconds?: number;
+  blockedReason?: string;
+  hour?: number;
+  country?: string;
   timestamp: string;
 }
 
@@ -79,7 +149,7 @@ export interface UserPreferences {
   preferredQuality: string;
   playbackSpeed: number;
   volume: number;
-  categoryAffinity: Record<string, number>; // e.g. { 'Tech & IA': 12, 'Gaming': -2 }
+  categoryAffinity: Record<string, number>;
   dislikedTags: string[];
   lastActive: string;
 }
@@ -87,7 +157,7 @@ export interface UserPreferences {
 export interface UserFavorites {
   likedVideoIds: string[];
   dislikedVideoIds: string[];
-  savedVideoIds: string[]; // Watch later
+  savedVideoIds: string[];
   downloadedVideos: {
     videoId: string;
     downloadedAt: string;
@@ -107,6 +177,7 @@ export interface UserProfileNamespace {
   activities: UserActivity[];
   preferences: UserPreferences;
   favorites: UserFavorites;
+  telemetry?: UserGeoTelemetry;
 }
 
 export interface RecommendationScore {

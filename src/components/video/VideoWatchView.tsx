@@ -14,6 +14,10 @@ import {
   Send,
   Lock,
   ExternalLink,
+  ShieldAlert,
+  ShieldCheck,
+  Trash2,
+  Edit3,
 } from 'lucide-react';
 import { Video, Comment, User, UserFavorites } from '../../types';
 import { VideoPlayer } from './VideoPlayer';
@@ -25,12 +29,19 @@ import {
   saveUserFile,
   logUserActivity,
 } from '../../storage/userNamespace';
+import {
+  moderateContentWithAI,
+  ModerationResult,
+} from '../../services/aiModerationService';
 
 interface VideoWatchViewProps {
   video: Video;
   currentUser: User | null;
   onSelectVideo: (video: Video) => void;
   onRequireAuth: (restrictionMessage: string) => void;
+  onEditVideo?: (video: Video) => void;
+  onDeleteVideo?: (video: Video) => void;
+  onControlsVisibilityChange?: (visible: boolean) => void;
 }
 
 export const VideoWatchView: React.FC<VideoWatchViewProps> = ({
@@ -38,6 +49,9 @@ export const VideoWatchView: React.FC<VideoWatchViewProps> = ({
   currentUser,
   onSelectVideo,
   onRequireAuth,
+  onEditVideo,
+  onDeleteVideo,
+  onControlsVisibilityChange,
 }) => {
   const [comments, setComments] = useState<Comment[]>([]);
   const [newCommentText, setNewCommentText] = useState('');
@@ -53,6 +67,8 @@ export const VideoWatchView: React.FC<VideoWatchViewProps> = ({
   const [isDescExpanded, setIsDescExpanded] = useState(false);
   const [replyingToCommentId, setReplyingToCommentId] = useState<string | null>(null);
   const [replyText, setReplyText] = useState('');
+  const [commentModerationBlock, setCommentModerationBlock] = useState<ModerationResult | null>(null);
+  const [isModeratingComment, setIsModeratingComment] = useState(false);
 
   // Recommendations for side panel
   const recommendations = getPersonalizedRecommendations(
@@ -285,22 +301,35 @@ export const VideoWatchView: React.FC<VideoWatchViewProps> = ({
     }, 200);
   };
 
-  // Handle Post Comment
-  const handlePostComment = (e: React.FormEvent) => {
+  // Handle Post Comment with AI Moderation
+  const handlePostComment = async (e: React.FormEvent) => {
     e.preventDefault();
-    if (!currentUser) {
-      onRequireAuth('Pour poster un commentaire sous cette vidéo, veuillez vous connecter ou créer un compte.');
+    if (!newCommentText.trim()) return;
+
+    setIsModeratingComment(true);
+    setCommentModerationBlock(null);
+
+    const modResult = await moderateContentWithAI({
+      text: newCommentText.trim(),
+      source: 'comment',
+      user: currentUser,
+    });
+
+    setIsModeratingComment(false);
+
+    if (modResult.blocked) {
+      setCommentModerationBlock(modResult);
       return;
     }
-
-    if (!newCommentText.trim()) return;
 
     const newComment: Comment = {
       id: `c-${Date.now()}`,
       videoId: video.id,
-      userId: currentUser.id,
-      userName: currentUser.username,
-      userAvatar: currentUser.avatar,
+      userId: currentUser ? currentUser.id : 'guest',
+      userName: currentUser ? currentUser.username : 'Visiteur MK',
+      userAvatar: currentUser
+        ? currentUser.avatar
+        : 'https://images.unsplash.com/photo-1535713875002-d1d0cf377fde?w=100&q=80',
       text: newCommentText.trim(),
       timestamp: 'À l\'instant',
       likes: 0,
@@ -310,21 +339,30 @@ export const VideoWatchView: React.FC<VideoWatchViewProps> = ({
     setComments([newComment, ...comments]);
     setNewCommentText('');
 
-    logUserActivity(currentUser.id, {
-      action: 'comment',
-      videoId: video.id,
-      videoTitle: video.title,
-      category: video.category,
-    });
+    if (currentUser) {
+      logUserActivity(currentUser.id, {
+        action: 'comment',
+        videoId: video.id,
+        videoTitle: video.title,
+        category: video.category,
+      });
+    }
   };
 
-  // Handle Post Reply
-  const handlePostReply = (commentId: string) => {
-    if (!currentUser) {
-      onRequireAuth('Pour répondre à ce commentaire, vous devez être connecté.');
+  // Handle Post Reply with AI Moderation
+  const handlePostReply = async (commentId: string) => {
+    if (!replyText.trim()) return;
+
+    const modResult = await moderateContentWithAI({
+      text: replyText.trim(),
+      source: 'comment',
+      user: currentUser,
+    });
+
+    if (modResult.blocked) {
+      setCommentModerationBlock(modResult);
       return;
     }
-    if (!replyText.trim()) return;
 
     setComments(comments.map(c => {
       if (c.id === commentId) {
@@ -336,9 +374,11 @@ export const VideoWatchView: React.FC<VideoWatchViewProps> = ({
             {
               id: `cr-${Date.now()}`,
               commentId,
-              userId: currentUser.id,
-              userName: currentUser.username,
-              userAvatar: currentUser.avatar,
+              userId: currentUser ? currentUser.id : 'guest',
+              userName: currentUser ? currentUser.username : 'Visiteur MK',
+              userAvatar: currentUser
+                ? currentUser.avatar
+                : 'https://images.unsplash.com/photo-1535713875002-d1d0cf377fde?w=100&q=80',
               text: replyText.trim(),
               timestamp: 'À l\'instant',
               likes: 0,
@@ -369,6 +409,7 @@ export const VideoWatchView: React.FC<VideoWatchViewProps> = ({
         {/* CUSTOM VIDEO PLAYER WITH DOUBLE CLICK 10S AND EXACT SECONDS PROGRESS LINE */}
         <VideoPlayer
           video={video}
+          onControlsVisibilityChange={onControlsVisibilityChange}
           onProgressUpdate={(secs) => {
             // Periodic update if user is logged in
             if (currentUser && secs > 0 && secs % 15 === 0) {
@@ -500,8 +541,41 @@ export const VideoWatchView: React.FC<VideoWatchViewProps> = ({
             >
               <Bookmark className={`w-4 h-4 ${isSaved ? 'fill-[#ff0000]' : ''}`} />
               <span className="hidden xs:inline">{isSaved ? 'Enregistré' : 'Enregistrer'}</span>
-              {!currentUser && <Lock className="w-3 h-3 text-gray-400 ml-0.5" />}
             </button>
+
+            {/* EDIT & DELETE USER PUBLICATION BUTTONS */}
+            {(video.isFromGallery ||
+              Boolean(video.creatorId) ||
+              (currentUser &&
+                (video.creatorId === currentUser.id ||
+                  video.channelId === `ch-${currentUser.id}` ||
+                  currentUser.role === 'admin'))) && (
+              <>
+                {onEditVideo && (
+                  <button
+                    type="button"
+                    onClick={() => onEditVideo(video)}
+                    className="flex items-center gap-1.5 px-3.5 py-2 rounded-full bg-amber-500/15 hover:bg-amber-500/25 text-amber-300 border border-amber-500/30 text-xs font-bold transition-colors cursor-pointer"
+                    title="Modifier cette vidéo"
+                  >
+                    <Edit3 className="w-4 h-4" />
+                    <span>Modifier</span>
+                  </button>
+                )}
+
+                {onDeleteVideo && (
+                  <button
+                    type="button"
+                    onClick={() => onDeleteVideo(video)}
+                    className="flex items-center gap-1.5 px-3.5 py-2 rounded-full bg-red-500/15 hover:bg-red-500/30 text-red-400 border border-red-500/30 text-xs font-bold transition-colors cursor-pointer"
+                    title="Supprimer définitivement cette publication"
+                  >
+                    <Trash2 className="w-4 h-4" />
+                    <span>Supprimer ma publication</span>
+                  </button>
+                )}
+              </>
+            )}
 
           </div>
         </div>
@@ -538,68 +612,78 @@ export const VideoWatchView: React.FC<VideoWatchViewProps> = ({
 
         {/* COMMENTS SECTION */}
         <div className="mt-4">
-          <div className="flex items-center gap-2 font-black text-base text-white mb-4">
-            <MessageSquare className="w-4 h-4 text-[#ff0000]" />
-            <span>{comments.length} Commentaires</span>
+          <div className="flex items-center justify-between gap-2 mb-4">
+            <div className="flex items-center gap-2 font-black text-base text-white">
+              <MessageSquare className="w-4 h-4 text-[#ff0000]" />
+              <span>{comments.length} Commentaires</span>
+            </div>
+            <div className="flex items-center gap-1.5 px-2.5 py-1 rounded-full bg-emerald-500/10 border border-emerald-500/20 text-[11px] font-semibold text-emerald-400">
+              <ShieldCheck className="w-3.5 h-3.5" />
+              <span>Modération IA active</span>
+            </div>
           </div>
 
-          {/* Add comment box */}
-          {currentUser ? (
-            <form onSubmit={handlePostComment} className="flex gap-3 mb-6">
-              <img
-                src={currentUser.avatar}
-                alt={currentUser.username}
-                className="w-9 h-9 rounded-full object-cover shrink-0 ring-1 ring-white/10"
-              />
-              <div className="flex-1 flex flex-col gap-2">
-                <input
-                  type="text"
-                  value={newCommentText}
-                  onChange={(e) => setNewCommentText(e.target.value)}
-                  placeholder="Ajouter un commentaire public sur MK..."
-                  className="w-full bg-transparent border-b border-white/20 focus:border-[#ff0000] py-2 text-sm text-white placeholder-gray-500 focus:outline-none transition-colors"
-                />
-                <div className="flex justify-end gap-2">
-                  <button
-                    type="button"
-                    onClick={() => setNewCommentText('')}
-                    className="px-3 py-1.5 text-xs text-gray-400 hover:text-white rounded-full"
-                  >
-                    Annuler
-                  </button>
-                  <button
-                    type="submit"
-                    disabled={!newCommentText.trim()}
-                    className="px-4 py-1.5 bg-[#ff0000] hover:bg-red-700 disabled:opacity-40 text-white font-bold text-xs rounded-full shadow-sm transition-all"
-                  >
-                    Commenter
-                  </button>
+          {commentModerationBlock && (
+            <div className="mb-4 p-4 rounded-2xl bg-red-950/40 border-2 border-red-500/60 text-white space-y-1.5 animate-in fade-in duration-150">
+              <div className="flex items-center justify-between">
+                <div className="flex items-center gap-2 text-red-400 font-black text-xs sm:text-sm">
+                  <ShieldAlert className="w-4 h-4 text-[#ff0000] shrink-0" />
+                  <span>COMMENTAIRE BLOQUÉ AUTOMATIQUEMENT PAR LE SYSTÈME IA</span>
                 </div>
+                <button
+                  onClick={() => setCommentModerationBlock(null)}
+                  className="text-xs text-gray-400 hover:text-white cursor-pointer"
+                >
+                  Fermer
+                </button>
               </div>
-            </form>
-          ) : (
-            <div
-              onClick={() => onRequireAuth('Pour poster un commentaire, veuillez vous connecter ou créer un compte MK.')}
-              className="p-4 rounded-2xl bg-[#1e1e1e] border border-white/10 flex items-center justify-between gap-3 mb-6 cursor-pointer hover:border-[#ff0000]/50 transition-colors"
-            >
-              <div className="flex items-center gap-3">
-                <div className="w-8 h-8 rounded-full bg-white/10 flex items-center justify-center text-gray-400">
-                  <Lock className="w-4 h-4" />
-                </div>
-                <div>
-                  <span className="text-xs font-bold text-white block">
-                    Vous souhaitez commenter cette vidéo ?
-                  </span>
-                  <span className="text-xs text-gray-400">
-                    Connectez-vous pour réagir et discuter avec les créateurs MK.
-                  </span>
-                </div>
-              </div>
-              <button className="px-4 py-1.5 rounded-full bg-[#ff0000] text-xs font-bold text-white shadow-md">
-                Connexion
-              </button>
+              <p className="text-xs text-gray-200">
+                Catégorie détectée : <strong className="text-red-300">{commentModerationBlock.violationCategory}</strong> ({commentModerationBlock.confidence}% de confiance)
+              </p>
+              <p className="text-xs text-gray-300">{commentModerationBlock.reason}</p>
             </div>
           )}
+
+          {/* Add comment box */}
+          <form onSubmit={handlePostComment} className="flex gap-3 mb-6">
+            <img
+              src={
+                currentUser
+                  ? currentUser.avatar
+                  : 'https://images.unsplash.com/photo-1535713875002-d1d0cf377fde?w=100&q=80'
+              }
+              alt={currentUser ? currentUser.username : 'Visiteur'}
+              className="w-9 h-9 rounded-full object-cover shrink-0 ring-1 ring-white/10"
+            />
+            <div className="flex-1 flex flex-col gap-2">
+              <input
+                type="text"
+                value={newCommentText}
+                onChange={(e) => setNewCommentText(e.target.value)}
+                placeholder="Ajouter un commentaire public (protégé par l'IA MK)..."
+                className="w-full bg-transparent border-b border-white/20 focus:border-[#ff0000] py-2 text-sm text-white placeholder-gray-500 focus:outline-none transition-colors"
+              />
+              <div className="flex justify-end gap-2">
+                <button
+                  type="button"
+                  onClick={() => {
+                    setNewCommentText('');
+                    setCommentModerationBlock(null);
+                  }}
+                  className="px-3 py-1.5 text-xs text-gray-400 hover:text-white rounded-full cursor-pointer"
+                >
+                  Annuler
+                </button>
+                <button
+                  type="submit"
+                  disabled={!newCommentText.trim() || isModeratingComment}
+                  className="px-4 py-1.5 bg-[#ff0000] hover:bg-red-700 disabled:opacity-40 text-white font-bold text-xs rounded-full shadow-sm transition-all cursor-pointer"
+                >
+                  {isModeratingComment ? 'Vérification IA...' : 'Commenter'}
+                </button>
+              </div>
+            </div>
+          </form>
 
           {/* Comments List */}
           <div className="space-y-4">
@@ -624,10 +708,25 @@ export const VideoWatchView: React.FC<VideoWatchViewProps> = ({
                     </button>
                     <button
                       onClick={() => setReplyingToCommentId(replyingToCommentId === comment.id ? null : comment.id)}
-                      className="hover:text-white font-semibold transition-colors"
+                      className="hover:text-white font-semibold transition-colors cursor-pointer"
                     >
                       Répondre
                     </button>
+                    {(comment.userId === 'guest' ||
+                      (currentUser &&
+                        (comment.userId === currentUser.id || currentUser.role === 'admin'))) && (
+                      <button
+                        type="button"
+                        onClick={() =>
+                          setComments((prev) => prev.filter((c) => c.id !== comment.id))
+                        }
+                        className="text-red-400 hover:text-red-300 font-semibold flex items-center gap-1 transition-colors cursor-pointer"
+                        title="Supprimer mon commentaire"
+                      >
+                        <Trash2 className="w-3 h-3" />
+                        <span>Supprimer</span>
+                      </button>
+                    )}
                   </div>
 
                   {/* Reply Input Box */}

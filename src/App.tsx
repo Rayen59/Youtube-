@@ -23,6 +23,7 @@ import {
   initializeNamespaceSystem,
   getCurrentSession,
   clearSession,
+  deleteUserAccount,
   logUserActivity,
   getUserFile,
   saveUserFile,
@@ -30,6 +31,9 @@ import {
 import {
   getCustomVideos,
   saveCustomVideo,
+  updateCustomVideo,
+  deleteCustomVideo,
+  getDeletedVideoIds,
   hydrateGalleryVideos,
 } from './services/customVideosStorage';
 import { CheckCircle2, Video as VideoIcon } from 'lucide-react';
@@ -45,12 +49,14 @@ export default function App() {
   const [currentUser, setCurrentUser] = useState<User | null>(null);
   const [theme, setTheme] = useState<'dark' | 'light'>('dark');
 
-  // Custom user created videos
+  // Custom user created videos & deleted IDs
   const [customVideos, setCustomVideos] = useState<Video[]>([]);
+  const [deletedVideoIds, setDeletedVideoIds] = useState<string[]>([]);
 
   // Navigation state & history stack
   const [currentNav, setCurrentNav] = useState<NavigationState>({ view: 'home' });
   const [historyStack, setHistoryStack] = useState<NavigationState[]>([]);
+  const [watchControlsVisible, setWatchControlsVisible] = useState(false);
 
   // Search & Filters
   const [searchQuery, setSearchQuery] = useState('');
@@ -65,6 +71,7 @@ export default function App() {
   const [authRestrictionMessage, setAuthRestrictionMessage] = useState<string | null>(null);
   const [isAdminDashboardOpen, setIsAdminDashboardOpen] = useState(false);
   const [isCreateModalOpen, setIsCreateModalOpen] = useState(false);
+  const [editingVideo, setEditingVideo] = useState<Video | null>(null);
 
   // Toast notification
   const [toastMessage, setToastMessage] = useState<string | null>(null);
@@ -80,6 +87,7 @@ export default function App() {
         setCurrentUser(session);
       }
     });
+    setDeletedVideoIds(getDeletedVideoIds());
     hydrateGalleryVideos().then((hydrated) => {
       setCustomVideos(hydrated);
     }).catch(() => {
@@ -102,18 +110,44 @@ export default function App() {
     setToastMessage(msg);
     setTimeout(() => {
       setToastMessage(null);
-    }, 3000);
+    }, 3200);
   };
 
-  // Combine default mock videos and user created videos
+  // Combine default mock videos and user created videos, excluding deleted ones
   const allVideos = useMemo(() => {
-    return [...customVideos, ...MOCK_VIDEOS];
-  }, [customVideos]);
+    const customIds = new Set(customVideos.map((v) => v.id));
+    const defaults = MOCK_VIDEOS.filter((v) => !customIds.has(v.id) && !deletedVideoIds.includes(v.id));
+    return [...customVideos.filter((v) => !deletedVideoIds.includes(v.id)), ...defaults];
+  }, [customVideos, deletedVideoIds]);
+
+  // User's own publications for Profile & Studio
+  const userOwnedVideos = useMemo(() => {
+    return allVideos.filter(
+      (v) =>
+        v.isFromGallery ||
+        v.id.startsWith('vid-custom-') ||
+        (currentUser && (v.creatorId === currentUser.id || v.channelTitle === currentUser.username))
+    );
+  }, [allVideos, currentUser]);
+
+  // Check if current user can edit/delete a video publication
+  const canManageVideo = useCallback(
+    (video: Video): boolean => {
+      if (video.isFromGallery || video.id.startsWith('vid-custom-')) return true;
+      if (!currentUser) return false;
+      if (currentUser.role === 'admin') return true;
+      return video.creatorId === currentUser.id || video.channelTitle === currentUser.username;
+    },
+    [currentUser]
+  );
 
   // Navigate to a new state and push to history
   const navigateTo = useCallback((nextState: NavigationState) => {
     setHistoryStack((prev) => [...prev, currentNav]);
     setCurrentNav(nextState);
+    if (nextState.view === 'watch') {
+      setWatchControlsVisible(false);
+    }
     window.scrollTo({ top: 0, behavior: 'smooth' });
   }, [currentNav]);
 
@@ -125,6 +159,7 @@ export default function App() {
     }
     if (isCreateModalOpen) {
       setIsCreateModalOpen(false);
+      setEditingVideo(null);
       return;
     }
 
@@ -147,10 +182,12 @@ export default function App() {
     setSelectedCategory('Tous');
     setIsAdminDashboardOpen(false);
     setIsCreateModalOpen(false);
+    setEditingVideo(null);
   }, [currentNav, navigateTo]);
 
   // Video selection
   const handleSelectVideo = useCallback((video: Video) => {
+    setWatchControlsVisible(false);
     navigateTo({ view: 'watch', selectedVideo: video });
   }, [navigateTo]);
 
@@ -177,6 +214,17 @@ export default function App() {
     showToast('Vous avez été déconnecté.');
   };
 
+  // Handle Account Deletion
+  const handleAccountDeleted = () => {
+    if (currentUser) {
+      deleteUserAccount(currentUser.id);
+    }
+    setCurrentUser(null);
+    setIsAdminDashboardOpen(false);
+    setCurrentNav({ view: 'home' });
+    showToast('Votre compte et toutes vos données ont été supprimés définitivement.');
+  };
+
   // Search handler
   const handleSearch = (query: string) => {
     setSearchQuery(query);
@@ -191,9 +239,44 @@ export default function App() {
   // Handle Video Creation
   const handleVideoCreated = (newVideo: Video) => {
     saveCustomVideo(newVideo);
-    setCustomVideos((prev) => [newVideo, ...prev]);
-    showToast(`Vidéo "${newVideo.title}" publiée avec succès !`);
+    setCustomVideos((prev) => [newVideo, ...prev.filter((v) => v.id !== newVideo.id)]);
+    setEditingVideo(null);
+    showToast(`Vidéo "${newVideo.title}" publiée en Haute Qualité !`);
     handleSelectVideo(newVideo);
+  };
+
+  // Handle Video Edit / Update
+  const handleVideoUpdated = (updatedVideo: Video) => {
+    updateCustomVideo(updatedVideo);
+    setCustomVideos((prev) => {
+      const exists = prev.some((v) => v.id === updatedVideo.id);
+      if (exists) {
+        return prev.map((v) => (v.id === updatedVideo.id ? updatedVideo : v));
+      }
+      return [updatedVideo, ...prev];
+    });
+    if (currentNav.selectedVideo?.id === updatedVideo.id) {
+      setCurrentNav((prev) => ({ ...prev, selectedVideo: updatedVideo }));
+    }
+    setEditingVideo(null);
+    showToast(`Publication "${updatedVideo.title}" mise à jour avec succès !`);
+  };
+
+  // Handle Open Video Editor for an existing publication
+  const handleOpenEditVideo = (video: Video) => {
+    setEditingVideo(video);
+    setIsCreateModalOpen(true);
+  };
+
+  // Handle Delete Publication
+  const handleDeleteVideo = async (video: Video) => {
+    await deleteCustomVideo(video.id);
+    setCustomVideos((prev) => prev.filter((v) => v.id !== video.id));
+    setDeletedVideoIds(getDeletedVideoIds());
+    showToast(`Publication "${video.title}" supprimée définitivement.`);
+    if (currentNav.view === 'watch' && currentNav.selectedVideo?.id === video.id) {
+      setCurrentNav({ view: 'home' });
+    }
   };
 
   // Quick Save (available to everyone)
@@ -291,7 +374,7 @@ export default function App() {
         <SplashScreen onComplete={() => setShowSplash(false)} />
       )}
 
-      {/* 2. FIXED HEADER (YOUTUBE EXACT REPLICA OF SCREENSHOT 2) */}
+      {/* 2. FIXED HEADER (YOUTUBE EXACT REPLICA) */}
       <Header
         currentUser={currentUser}
         canGoBack={historyStack.length > 0 || currentNav.view !== 'home'}
@@ -303,7 +386,10 @@ export default function App() {
         onOpenAdmin={() => setIsAdminDashboardOpen(true)}
         onOpenLibrary={(tab) => navigateTo({ view: 'library', libraryTab: tab })}
         onOpenProfile={() => navigateTo({ view: 'profile' })}
-        onOpenCreateModal={() => setIsCreateModalOpen(true)}
+        onOpenCreateModal={() => {
+          setEditingVideo(null);
+          setIsCreateModalOpen(true);
+        }}
         theme={theme}
         onToggleTheme={() => setTheme(theme === 'dark' ? 'light' : 'dark')}
         onToggleFilters={() => setIsFiltersOpen(!isFiltersOpen)}
@@ -311,7 +397,7 @@ export default function App() {
       />
 
       {/* 3. MAIN WORKSPACE WITH DESKTOP SIDEBAR / MOBILE BOTTOM NAV */}
-      <div className="pt-14 sm:pt-16 pb-16 md:pb-6 flex min-h-[calc(100vh-64px)]">
+      <div className={`pt-14 sm:pt-16 ${currentNav.view === 'watch' && !watchControlsVisible ? 'pb-4' : 'pb-16'} md:pb-6 flex min-h-[calc(100vh-64px)]`}>
         
         {/* Navigation Component */}
         <Navigation
@@ -320,7 +406,11 @@ export default function App() {
           currentUser={currentUser}
           onOpenAdmin={() => setIsAdminDashboardOpen(true)}
           onRequireAuth={handleRequireAuth}
-          onOpenCreateModal={() => setIsCreateModalOpen(true)}
+          onOpenCreateModal={() => {
+            setEditingVideo(null);
+            setIsCreateModalOpen(true);
+          }}
+          watchControlsVisible={watchControlsVisible}
         />
 
         {/* Dynamic Center Stage Content (Fluid YouTube Feed) */}
@@ -330,7 +420,7 @@ export default function App() {
           {currentNav.view === 'home' && (
             <div className="max-w-[1920px] mx-auto space-y-3 sm:space-y-4">
               
-              {/* Category Pills Slider (Sticky below header, exact match to Screenshot 2) */}
+              {/* Category Pills Slider */}
               <div className="px-3 sm:px-0">
                 <CategoryChips
                   selectedCategory={selectedCategory}
@@ -359,7 +449,7 @@ export default function App() {
                 </div>
               )}
 
-              {/* CONTINUOUS VIDEO GRID (1 Col on mobile edge-to-edge, 2-4 cols on desktop) */}
+              {/* CONTINUOUS VIDEO GRID */}
               {filteredVideos.length === 0 ? (
                 <div className="p-16 text-center text-zinc-400 text-sm">
                   <VideoIcon className="w-12 h-12 text-zinc-600 mx-auto mb-3" />
@@ -378,6 +468,9 @@ export default function App() {
                       onSelect={handleSelectVideo}
                       onSaveQuick={handleQuickSave}
                       onShareQuick={handleQuickShare}
+                      canManage={canManageVideo(video)}
+                      onEditVideo={handleOpenEditVideo}
+                      onDeleteVideo={handleDeleteVideo}
                     />
                   ))}
                 </div>
@@ -393,6 +486,9 @@ export default function App() {
               currentUser={currentUser}
               onSelectVideo={handleSelectVideo}
               onRequireAuth={handleRequireAuth}
+              onEditVideo={canManageVideo(currentNav.selectedVideo) ? handleOpenEditVideo : undefined}
+              onDeleteVideo={canManageVideo(currentNav.selectedVideo) ? handleDeleteVideo : undefined}
+              onControlsVisibilityChange={setWatchControlsVisible}
             />
           )}
 
@@ -425,12 +521,25 @@ export default function App() {
             </div>
           )}
 
-          {/* VIEW: PROFILE & ISOLATED NAMESPACE */}
+          {/* VIEW: PROFILE, PUBLICATIONS, SEARCHES & ACCOUNT DELETION */}
           {currentNav.view === 'profile' && (
             <div className="px-3 sm:px-0">
               <UserProfileView
                 currentUser={currentUser}
                 onRequireAuth={handleRequireAuth}
+                userVideos={userOwnedVideos}
+                onSelectVideo={handleSelectVideo}
+                onEditVideo={handleOpenEditVideo}
+                onDeleteVideo={handleDeleteVideo}
+                onOpenCreateModal={() => {
+                  setEditingVideo(null);
+                  setIsCreateModalOpen(true);
+                }}
+                onDeleteAccount={handleAccountDeleted}
+                onUserUpdated={(updatedUser) => {
+                  setCurrentUser(updatedUser);
+                  showToast('Profil mis à jour avec succès !');
+                }}
               />
             </div>
           )}
@@ -453,11 +562,16 @@ export default function App() {
         />
       )}
 
-      {/* 5. CREATE VIDEO / PAGE MODAL */}
+      {/* 5. CREATE / EDIT VIDEO STUDIO MODAL */}
       <CreateVideoModal
         isOpen={isCreateModalOpen}
-        onClose={() => setIsCreateModalOpen(false)}
+        onClose={() => {
+          setIsCreateModalOpen(false);
+          setEditingVideo(null);
+        }}
         onVideoCreated={handleVideoCreated}
+        onVideoUpdated={handleVideoUpdated}
+        editingVideo={editingVideo}
         currentUser={currentUser}
       />
 

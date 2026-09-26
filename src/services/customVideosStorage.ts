@@ -2,14 +2,26 @@ import { Video } from '../types';
 import { getVideoBlobFromDB, deleteVideoBlobFromDB } from './videoMediaStorage';
 
 const CUSTOM_VIDEOS_STORAGE_KEY = 'mk_custom_user_created_videos_v2';
+const DELETED_VIDEO_IDS_KEY = 'mk_deleted_video_ids_v1';
+
 // In-memory cache of object URLs created for indexedDB blobs to avoid memory leaks
 const activeBlobUrls: Map<string, string> = new Map();
+
+export const getDeletedVideoIds = (): string[] => {
+  try {
+    const raw = localStorage.getItem(DELETED_VIDEO_IDS_KEY);
+    return raw ? (JSON.parse(raw) as string[]) : [];
+  } catch {
+    return [];
+  }
+};
 
 export const getCustomVideos = (): Video[] => {
   try {
     const raw = localStorage.getItem(CUSTOM_VIDEOS_STORAGE_KEY);
     if (!raw) return [];
-    const list = JSON.parse(raw) as Video[];
+    const deletedIds = new Set(getDeletedVideoIds());
+    const list = (JSON.parse(raw) as Video[]).filter((v) => !deletedIds.has(v.id));
     // Reattach any active object URLs for gallery videos
     return list.map((video) => {
       if (video.isFromGallery && activeBlobUrls.has(video.id)) {
@@ -69,11 +81,32 @@ export const saveCustomVideo = (video: Video): void => {
   }
 };
 
+export const updateCustomVideo = (updatedVideo: Video): void => {
+  try {
+    if (updatedVideo.isFromGallery && updatedVideo.videoUrl.startsWith('blob:')) {
+      activeBlobUrls.set(updatedVideo.id, updatedVideo.videoUrl);
+    }
+    const current = getCustomVideos();
+    const exists = current.some((v) => v.id === updatedVideo.id);
+    const updated = exists
+      ? current.map((v) => (v.id === updatedVideo.id ? updatedVideo : v))
+      : [updatedVideo, ...current];
+    localStorage.setItem(CUSTOM_VIDEOS_STORAGE_KEY, JSON.stringify(updated));
+  } catch (err) {
+    console.error('Failed to update custom video:', err);
+  }
+};
+
 export const deleteCustomVideo = async (videoId: string): Promise<void> => {
   try {
     const current = getCustomVideos();
     const updated = current.filter((v) => v.id !== videoId);
     localStorage.setItem(CUSTOM_VIDEOS_STORAGE_KEY, JSON.stringify(updated));
+
+    const deletedIds = getDeletedVideoIds();
+    if (!deletedIds.includes(videoId)) {
+      localStorage.setItem(DELETED_VIDEO_IDS_KEY, JSON.stringify([...deletedIds, videoId]));
+    }
 
     if (activeBlobUrls.has(videoId)) {
       const url = activeBlobUrls.get(videoId);
